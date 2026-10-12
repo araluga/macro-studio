@@ -4,6 +4,8 @@
 
 A Windows macro recorder that can also **react to what's on screen**. Record your mouse clicks, movements and keystrokes, then replay them on demand, or automatically when a chosen image shows up on screen.
 
+**[⬇ Download MacroStudio.exe](https://github.com/araluga/macro-studio/releases/latest)**: one file for Windows 10/11, nothing to install.
+
 ![Macro Studio](docs/screenshot.png)
 
 ## Features
@@ -37,7 +39,15 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 | `F11` | Start / stop monitoring |
 | `F12` | Emergency stop |
 
-## Installation
+## Download
+
+Grab **`MacroStudio.exe`** from the [latest release](https://github.com/araluga/macro-studio/releases/latest). It's a single file with nothing to install. Just run it (Windows 10/11, 64-bit).
+
+- Windows SmartScreen may warn about an unknown publisher because the exe isn't code-signed. Click **More info → Run anyway**.
+- Some antivirus tools flag any app that listens to the keyboard and mouse. That's how hotkeys and recording work. The source is all here, so you can also run it from source or build it yourself (see below).
+- The exe keeps your macros and settings in `%APPDATA%\MacroStudio`.
+
+## Run from source
 
 Requires **Windows 10/11** and **Python 3.10+**.
 
@@ -50,6 +60,14 @@ python macro_app.py
 
 Or just double-click **`run.bat`**. It installs the dependencies on first launch and starts the app without a console window.
 
+### Build the exe
+
+```bash
+build.bat
+```
+
+This creates `dist\MacroStudio.exe` with [PyInstaller](https://pyinstaller.org/) (see `MacroStudio.spec`).
+
 ## How it works
 
 | File | Purpose |
@@ -58,7 +76,7 @@ Or just double-click **`run.bat`**. It installs the dependencies on first launch
 | `core.py` | Recording and playback ([pynput](https://github.com/moses-palmer/pynput)), screen capture ([mss](https://github.com/BoboTiG/python-mss)), template matching ([OpenCV](https://opencv.org/) `TM_CCOEFF_NORMED`) |
 | `i18n.py` | English / Russian translations |
 
-Macros are stored in `macros.json` and app settings in `settings.json`, both next to the app.
+Macros are stored in `macros.json` and app settings in `settings.json`: next to the script when run from source, in `%APPDATA%\MacroStudio` for the exe.
 
 ## Notes
 

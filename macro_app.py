@@ -33,7 +33,14 @@ import core
 import i18n
 from i18n import count, tr
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+__version__ = "1.0.0"
+
+if getattr(sys, "frozen", False):
+    # packaged .exe: the bundle is unpacked to a temp folder, so keep user data in %APPDATA%
+    APP_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MacroStudio")
+    os.makedirs(APP_DIR, exist_ok=True)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(APP_DIR, "macros.json")
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
 
@@ -154,11 +161,14 @@ def apply_qt_translator(lang):
         _qt_translator = None
     if lang == "en":
         return
+    import PySide6
     t = QTranslator()
-    path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
-    if t.load(f"qtbase_{lang}", path):
-        app.installTranslator(t)
-        _qt_translator = t
+    for path in (QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath),
+                 os.path.join(os.path.dirname(PySide6.__file__), "translations")):  # packaged .exe layout
+        if t.load(f"qtbase_{lang}", path):
+            app.installTranslator(t)
+            _qt_translator = t
+            return
 
 
 # --------------------------------------------------------------------------
@@ -211,11 +221,12 @@ def qimage_to_pil(qimg):
     return Image.frombuffer("RGBA", (w, h), data, "raw", "RGBA", bpl, 1).copy()
 
 
-def make_app_icon():
-    pm = QPixmap(64, 64)
+def make_app_icon(size=64):
+    pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.scale(size / 64, size / 64)
     g = QLinearGradient(0, 0, 64, 64)
     g.setColorAt(0, QColor(ACCENT))
     g.setColorAt(1, QColor(ACCENT2))
@@ -857,7 +868,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings):
         super().__init__()
         self.settings = settings
-        self.setWindowTitle("Macro Studio")
+        self.setWindowTitle(f"Macro Studio {__version__}")
         self.setWindowIcon(make_app_icon())
         self.setMinimumSize(980, 600)
 
