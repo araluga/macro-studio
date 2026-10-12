@@ -55,6 +55,17 @@ RU = {
     "Monitor": "Мониторинг",
     "Stop": "Стоп",
     "Language": "Язык",
+    "Click to change the hotkey": "Нажмите, чтобы сменить клавишу",
+
+    # tray and emergency stop
+    "Show window": "Показать окно",
+    "Quit": "Выход",
+    "click this icon to stop": "нажмите на значок, чтобы остановить",
+    "Corner emergency stop": "Аварийная остановка в углу",
+    "Move the mouse into the top-left corner of the screen to stop playback or monitoring. Works even when hotkeys can't (e.g. over admin windows).":
+        "Уведите мышь в левый верхний угол экрана, чтобы остановить воспроизведение или мониторинг. Работает, даже когда горячие клавиши не срабатывают (например, поверх окон администратора).",
+    "Emergency stop: the mouse was moved into the top-left corner.":
+        "Аварийная остановка: мышь уведена в левый верхний угол.",
 
     # header
     "Macro name": "Название макроса",
@@ -99,6 +110,15 @@ RU = {
     "Finds enlarged or shrunk images, but is slower.":
         "Находит увеличенную или уменьшенную картинку, но работает медленнее.",
     "Cooldown after trigger": "Пауза после срабатывания",
+    "Wait until the image disappears": "Ждать, пока картинка исчезнет",
+    "After a run, the macro can fire again only once the image has left the screen.":
+        "После срабатывания макрос сработает снова, только когда картинка пропадёт с экрана.",
+    "Max runs per monitoring session": "Лимит срабатываний за сеанс",
+    "0 — unlimited. Protects against endless runs if the macro doesn't remove the image.":
+        "0 — без лимита. Защищает от бесконечных запусков, если макрос не убирает картинку.",
+    "Play only when the image is found": "Воспроизводить, только если картинка найдена",
+    "On Play, a repeat is skipped if the image isn't on screen, instead of clicking at the recorded spots.":
+        "При воспроизведении повтор пропускается, если картинки нет на экране, вместо кликов по записанным местам.",
     "So the macro doesn't fire again and again on the same image.":
         "Чтобы макрос не запускался много раз подряд на одну и ту же картинку.",
     " s": " с",
@@ -114,7 +134,7 @@ RU = {
     "Playback": "Воспроизведение",
     "How to replay the recorded actions.": "Как повторять записанные действия.",
     "Repeats": "Повторов",
-    "0 — forever, until you press F12": "0 — бесконечно, пока не нажмёте F12",
+    "0 — forever, until you press {key}": "0 — бесконечно, пока не нажмёте {key}",
     "Delay between repeats": "Пауза между повторами",
     "Speed": "Скорость",
     "Clicks only": "Только клики",
@@ -153,6 +173,10 @@ RU = {
     "Error": "Ошибка",
     "Could not read {path}:\n{err}": "Не удалось прочитать {path}:\n{err}",
     "Save error: {err}": "Ошибка сохранения: {err}",
+    "The damaged file was renamed to:\n{path}\nso it won't be overwritten.":
+        "Повреждённый файл переименован в:\n{path}\nчтобы он не перезаписался.",
+    "New macros will be saved to:\n{path}\nso the damaged file won't be overwritten.":
+        "Новые макросы будут сохраняться в:\n{path}\nчтобы повреждённый файл не перезаписался.",
     "Export": "Экспорт",
     "Import": "Импорт",
     "Macros (*.json)": "Макросы (*.json)",
@@ -177,22 +201,27 @@ RU = {
     "not found": "не найдено",
 
     # recording / playback / monitoring
-    "Ready. F9 — record, F10 — play, F11 — monitor, F12 — stop.":
-        "Готово. F9 — запись, F10 — воспроизвести, F11 — мониторинг, F12 — стоп.",
-    "Stop the current action first (F12).": "Сначала остановите текущее действие (F12).",
+    "Ready. {record} — record, {play} — play, {watch} — monitor, {stop} — stop.":
+        "Готово. {record} — запись, {play} — воспроизвести, {watch} — мониторинг, {stop} — стоп.",
+    "Stop the current action first ({key}).": "Сначала остановите текущее действие ({key}).",
     "Overwrite the actions of macro “{name}”?": "Перезаписать действия макроса «{name}»?",
     "Preparing to record…": "Подготовка к записи…",
     " Image found ({score}%) — clicks will be anchored to it.":
         " Картинка найдена ({score}%) — клики будут привязаны к ней.",
     " Image not on screen ({score}%) — no anchor.": " Картинки на экране нет ({score}%) — без привязки.",
-    "Recording “{name}” started. F9 — stop.": "Запись «{name}» началась. F9 — остановить.",
-    "REC  {time}   ·   {events}   ·   F9 — stop": "ЗАПИСЬ  {time}   ·   {events}   ·   F9 — стоп",
+    "Recording “{name}” started. {key} — stop.": "Запись «{name}» началась. {key} — остановить.",
+    "REC  {time}   ·   {events}   ·   {key} — stop": "ЗАПИСЬ  {time}   ·   {events}   ·   {key} — стоп",
     "Recording stopped: {events}.": "Запись остановлена: {events}.",
     "No recorded actions in this macro — press “Record” first.":
         "В макросе нет записанных действий — сначала нажмите «Записать».",
     "{n} of {total}": "{n} из {total}",
-    "PLAYING  “{name}”   ·   {progress}   ·   F12 — stop":
-        "ВОСПРОИЗВЕДЕНИЕ  «{name}»   ·   {progress}   ·   F12 — стоп",
+    "PLAYING  “{name}”   ·   {progress}   ·   {key} — stop":
+        "ВОСПРОИЗВЕДЕНИЕ  «{name}»   ·   {progress}   ·   {key} — стоп",
+    "WAITING FOR IMAGE  “{name}”   ·   {key} — stop": "ЖДУ КАРТИНКУ  «{name}»   ·   {key} — стоп",
+    "Image for “{name}” not found ({score}%) — waiting for it, repeats are skipped.":
+        "Картинка для «{name}» не найдена ({score}%) — жду её, повторы пропускаются.",
+    "Image for “{name}” not found ({score}%) — clicking at the recorded positions.":
+        "Картинка для «{name}» не найдена ({score}%) — клики идут по записанным координатам.",
     "Playback of “{name}” finished ({times}).": "Воспроизведение «{name}» завершено ({times}).",
     "Playback error: {err}": "Ошибка воспроизведения: {err}",
     "No macros with an enabled trigger, an image and recorded actions.":
@@ -200,9 +229,12 @@ RU = {
     "Monitoring started: {names}": "Мониторинг запущен: {names}",
     "Found “{name}” ({score}%) at ({x}, {y}) — running": "Найдено «{name}» ({score}%) в ({x}, {y}) — выполняю",
     ", offset {offset}": ", сдвиг {offset}",
-    "RUNNING  “{name}”   ·   F12 — stop": "ВЫПОЛНЯЕТСЯ  «{name}»   ·   F12 — стоп",
-    "MONITORING   ·   {parts}   ·   fired: {n}   ·   F11 — stop":
-        "МОНИТОРИНГ   ·   {parts}   ·   сработало: {n}   ·   F11 — стоп",
+    "RUNNING  “{name}”   ·   {key} — stop": "ВЫПОЛНЯЕТСЯ  «{name}»   ·   {key} — стоп",
+    "MONITORING   ·   {parts}   ·   fired: {n}   ·   {key} — stop":
+        "МОНИТОРИНГ   ·   {parts}   ·   сработало: {n}   ·   {key} — стоп",
+    "“{name}” reached its limit of {n} runs.": "«{name}» достиг лимита: {n} срабатываний.",
+    "All macros reached their run limit — monitoring stopped.":
+        "Все макросы достигли лимита срабатываний — мониторинг остановлен.",
     "Monitoring error: {err}": "Ошибка мониторинга: {err}",
     "Monitoring stopped. Triggered: {n}.": "Мониторинг остановлен. Срабатываний: {n}.",
     "“{name}”": "«{name}»",

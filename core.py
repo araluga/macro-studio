@@ -15,12 +15,6 @@ from pynput import keyboard, mouse
 
 _MSS = getattr(mss, "MSS", None) or mss.mss
 
-HOTKEY_RECORD = keyboard.Key.f9
-HOTKEY_PLAY = keyboard.Key.f10
-HOTKEY_WATCH = keyboard.Key.f11
-HOTKEY_STOP = keyboard.Key.f12
-HOTKEYS = {HOTKEY_RECORD, HOTKEY_PLAY, HOTKEY_WATCH, HOTKEY_STOP}
-
 MOVE_MIN_INTERVAL = 0.01  # record at most 100 mouse moves per second
 
 
@@ -33,6 +27,7 @@ def new_macro(name):
         "name": name,
         "events": [],
         "anchor": None,          # template image center at the moment of recording
+        "anchor_scale": 1.0,     # template scale at the moment of recording
         "repeats": 1,            # 0 = forever
         "speed": 1.0,
         "repeat_delay": 0.5,
@@ -46,6 +41,9 @@ def new_macro(name):
             "relative": True,
             "multiscale": False,
             "cooldown": 2.0,
+            "wait_gone": True,   # after a run, wait until the image disappears before firing again
+            "max_runs": 0,       # per monitoring session, 0 = unlimited
+            "require": True,     # Play: skip a repeat when the image isn't on screen
         },
     }
 
@@ -92,23 +90,55 @@ def b64_to_image(data):
 
 
 def key_to_str(key):
+    """Special keys by name, everything else by virtual-key code (layout- and modifier-independent)."""
     if isinstance(key, keyboard.Key):
         return "Key." + key.name
-    if getattr(key, "char", None):
-        return "char:" + key.char
     if getattr(key, "vk", None) is not None:
         return "vk:" + str(key.vk)
+    if getattr(key, "char", None):
+        return "char:" + key.char
     return None
 
 
 def str_to_key(s):
     if s.startswith("Key."):
         return keyboard.Key[s[4:]]
-    if s.startswith("char:"):
-        return keyboard.KeyCode.from_char(s[5:])
     if s.startswith("vk:"):
         return keyboard.KeyCode.from_vk(int(s[3:]))
+    if s.startswith("char:"):  # recordings made before 1.1
+        return keyboard.KeyCode.from_char(s[5:])
     raise ValueError(s)
+
+
+# --------------------------------------------------------------------------
+# Screen capture
+# --------------------------------------------------------------------------
+
+_tls = threading.local()
+
+
+def _sct():
+    """One mss instance per thread (mss handles are not thread-safe)."""
+    sct = getattr(_tls, "sct", None)
+    if sct is None:
+        sct = _tls.sct = _MSS()
+    return sct
+
+
+def grab_screen(rect=None):
+    """Screenshot of a rectangle (physical pixels) -> (BGR array, left, top)."""
+    sct = _sct()
+    if rect:
+        mon = {"left": int(rect[0]), "top": int(rect[1]), "width": int(rect[2]), "height": int(rect[3])}
+    else:
+        mon = sct.monitors[0]  # the whole virtual screen (all monitors)
+    shot = np.array(sct.grab(mon))[:, :, :3]
+    return np.ascontiguousarray(shot), mon["left"], mon["top"]
+
+
+def grab_pil(rect):
+    raw = _sct().grab({"left": int(rect[0]), "top": int(rect[1]), "width": int(rect[2]), "height": int(rect[3])})
+    return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
 
 # --------------------------------------------------------------------------
@@ -116,7 +146,7 @@ def str_to_key(s):
 # --------------------------------------------------------------------------
 
 class Template:
-    """Template prepared for OpenCV (BGR + transparency mask)."""
+    """Template prepared for OpenCV (BGR + transparency mask), with per-scale caching."""
 
     def __init__(self, pil_img):
         arr = np.array(pil_img.convert("RGBA"))
@@ -127,6 +157,19 @@ class Template:
             # transparent pixels (e.g. a sticker background) are ignored
             m = (alpha > 127).astype(np.uint8) * 255
             self.mask = cv2.merge([m, m, m])
+        self._scaled = {}
+
+    def scaled(self, s):
+        s = round(s, 3)
+        if s == 1.0:
+            return self.bgr, self.mask
+        if s not in self._scaled:
+            w = max(4, int(round(self.bgr.shape[1] * s)))
+            h = max(4, int(round(self.bgr.shape[0] * s)))
+            t = cv2.resize(self.bgr, (w, h), interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+            m = None if self.mask is None else cv2.resize(self.mask, (w, h), interpolation=cv2.INTER_NEAREST)
+            self._scaled[s] = (t, m)
+        return self._scaled[s]
 
 
 class TemplateCache:
@@ -147,65 +190,93 @@ class TemplateCache:
             return tpl
 
 
-def grab_screen(rect=None):
-    """Screenshot of a rectangle (physical pixels) -> (BGR array, left, top)."""
-    with _MSS() as sct:
-        if rect:
-            mon = {"left": int(rect[0]), "top": int(rect[1]),
-                   "width": int(rect[2]), "height": int(rect[3])}
-        else:
-            mon = sct.monitors[0]  # the whole virtual screen (all monitors)
-        shot = np.array(sct.grab(mon))[:, :, :3]
-        return np.ascontiguousarray(shot), mon["left"], mon["top"]
-
-
-def grab_pil(rect):
-    with _MSS() as sct:
-        raw = sct.grab({"left": int(rect[0]), "top": int(rect[1]),
-                        "width": int(rect[2]), "height": int(rect[3])})
-        return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-
-
 SCALES = [1.0, 0.9, 1.1, 0.8, 1.25, 0.7, 1.4, 0.6, 1.6, 0.5]
 
 
-def find_template(tpl, region=None, multiscale=False):
-    """Returns (similarity 0..1, (x, y, w, h) of the best match in screen coordinates)."""
-    shot, ox, oy = grab_screen(region)
-    best_score, best_rect = -1.0, None
-    for s in (SCALES if multiscale else [1.0]):
-        if s == 1.0:
-            t, m = tpl.bgr, tpl.mask
+def _best_match(img, t, m):
+    """Best TM_CCOEFF_NORMED score and location. Flat (zero-variance) areas give inf/NaN
+    with a mask, and occasionally values above 1 — both are discarded, not clipped."""
+    if t.shape[0] > img.shape[0] or t.shape[1] > img.shape[1]:
+        return -1.0, None
+    res = cv2.matchTemplate(img, t, cv2.TM_CCOEFF_NORMED, mask=m) if m is not None \
+        else cv2.matchTemplate(img, t, cv2.TM_CCOEFF_NORMED)
+    res[~np.isfinite(res) | (res > 1.0001)] = -1.0
+    _, mx, _, loc = cv2.minMaxLoc(res)
+    return min(float(mx), 1.0), loc
+
+
+def _search(img, tpl, multiscale):
+    """-> (score, (x, y, w, h) inside img, scale)"""
+    if not multiscale:
+        score, loc = _best_match(img, tpl.bgr, tpl.mask)
+        th, tw = tpl.bgr.shape[:2]
+        return score, (loc[0], loc[1], tw, th) if loc else None, 1.0
+
+    # 1) coarse pass on a half-size frame over all scales
+    th, tw = tpl.bgr.shape[:2]
+    f = 0.5 if min(th, tw) * 0.5 * min(SCALES) >= 10 else 1.0
+    small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA) if f < 1 else img
+    coarse = (-1.0, None, 1.0)
+    for s in SCALES:
+        t, m = tpl.scaled(s * f)
+        score, loc = _best_match(small, t, m)
+        if loc and score > coarse[0]:
+            coarse = (score, loc, s)
+    if coarse[1] is None:
+        return 0.0, None, 1.0
+
+    # 2) refine at full resolution around the coarse hit with neighbouring scales
+    _, (cx, cy), s0 = coarse
+    best = (-1.0, None, s0)
+    for s in (s0 * 0.94, s0 * 0.97, s0, s0 * 1.03, s0 * 1.06):
+        t, m = tpl.scaled(s)
+        h, w = t.shape[:2]
+        pad = max(8, int(max(w, h) * 0.25))
+        x1, y1 = max(0, int(cx / f) - pad), max(0, int(cy / f) - pad)
+        x2, y2 = min(img.shape[1], int(cx / f) + w + pad), min(img.shape[0], int(cy / f) + h + pad)
+        score, loc = _best_match(img[y1:y2, x1:x2], t, m)
+        if loc and score > best[0]:
+            best = (score, (x1 + loc[0], y1 + loc[1], w, h), s)
+    return best
+
+
+def find_template(tpl, region=None, multiscale=False, frame=None):
+    """Returns (similarity 0..1, (x, y, w, h) in screen coordinates or None, scale).
+
+    frame: optional (BGR array, left, top) of an already captured screen, so several
+    macros can be checked against one screenshot."""
+    if frame is None:
+        img, ox, oy = grab_screen(region)
+    else:
+        full, fx, fy = frame
+        if region:
+            x1, y1 = max(0, region[0] - fx), max(0, region[1] - fy)
+            x2 = min(full.shape[1], region[0] + region[2] - fx)
+            y2 = min(full.shape[0], region[1] + region[3] - fy)
+            img, ox, oy = full[y1:y2, x1:x2], fx + x1, fy + y1
         else:
-            w = max(4, int(tpl.bgr.shape[1] * s))
-            h = max(4, int(tpl.bgr.shape[0] * s))
-            t = cv2.resize(tpl.bgr, (w, h), interpolation=cv2.INTER_AREA)
-            m = None if tpl.mask is None else cv2.resize(tpl.mask, (w, h), interpolation=cv2.INTER_NEAREST)
-        th, tw = t.shape[:2]
-        if th > shot.shape[0] or tw > shot.shape[1]:
-            continue
-        if m is not None:
-            res = cv2.matchTemplate(shot, t, cv2.TM_CCOEFF_NORMED, mask=m)
-        else:
-            res = cv2.matchTemplate(shot, t, cv2.TM_CCOEFF_NORMED)
-        res = np.nan_to_num(res, nan=-1.0, posinf=-1.0, neginf=-1.0)
-        _, mx, _, loc = cv2.minMaxLoc(res)
-        if mx > best_score:
-            best_score = mx
-            best_rect = (loc[0] + ox, loc[1] + oy, tw, th)
-    return max(best_score, 0.0), best_rect
+            img, ox, oy = full, fx, fy
+    if img.size == 0:
+        return 0.0, None, 1.0
+    score, rect, scale = _search(img, tpl, multiscale)
+    if rect is None:
+        return 0.0, None, 1.0
+    return max(score, 0.0), (rect[0] + ox, rect[1] + oy, rect[2], rect[3]), scale
 
 
 def rect_center(rect):
     return rect[0] + rect[2] // 2, rect[1] + rect[3] // 2
 
 
-def click_offset(m, rect):
-    """Click offset: where the image is now minus where it was during recording."""
+def click_transform(m, rect, scale):
+    """Maps recorded coordinates to where the image is now: shift by the anchor movement and,
+    for multi-scale matches, scale the distance from the anchor by the size change."""
     if not m["trigger"]["relative"] or not m.get("anchor") or not rect:
-        return 0, 0
+        return None
+    ax, ay = m["anchor"]
     cx, cy = rect_center(rect)
-    return cx - m["anchor"][0], cy - m["anchor"][1]
+    k = scale / (m.get("anchor_scale") or 1.0) if m["trigger"]["multiscale"] else 1.0
+    return ax, ay, cx, cy, k
 
 
 # --------------------------------------------------------------------------
@@ -260,7 +331,7 @@ class Recorder:
             self.events.append([self._t(), "s", int(x), int(y), int(dx), int(dy)])
 
     def key(self, key, pressed):
-        if not (self.active and self.record_keyboard) or key in HOTKEYS:
+        if not (self.active and self.record_keyboard):
             return
         s = key_to_str(key)
         if s:
@@ -277,8 +348,17 @@ class Player:
         self.mouse = mouse.Controller()
         self.kb = keyboard.Controller()
 
-    def run(self, m, offset=(0, 0)):
-        dx, dy = offset
+    def run(self, m, transform=None):
+        """transform: (anchor_x, anchor_y, now_x, now_y, scale) from click_transform(), or None."""
+        if transform:
+            ax, ay, cx, cy, k = transform
+
+            def pos(x, y):
+                return int(round(cx + (x - ax) * k)), int(round(cy + (y - ay) * k))
+        else:
+            def pos(x, y):
+                return x, y
+
         speed = max(0.05, float(m["speed"]))
         skip_moves = m["skip_moves"]
         pressed_buttons, pressed_keys = set(), set()
@@ -294,9 +374,9 @@ class Player:
                 if delay > 0 and self.stop_event.wait(delay):
                     break
                 if kind == "m":
-                    self.mouse.position = (ev[2] + dx, ev[3] + dy)
+                    self.mouse.position = pos(ev[2], ev[3])
                 elif kind == "c":
-                    self.mouse.position = (ev[2] + dx, ev[3] + dy)
+                    self.mouse.position = pos(ev[2], ev[3])
                     btn = getattr(mouse.Button, ev[4], mouse.Button.left)
                     if ev[5]:
                         self.mouse.press(btn)
@@ -305,7 +385,7 @@ class Player:
                         self.mouse.release(btn)
                         pressed_buttons.discard(btn)
                 elif kind == "s":
-                    self.mouse.position = (ev[2] + dx, ev[3] + dy)
+                    self.mouse.position = pos(ev[2], ev[3])
                     self.mouse.scroll(ev[4], ev[5])
                 elif kind == "k":
                     try:

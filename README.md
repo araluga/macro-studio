@@ -18,7 +18,11 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 - **Transparency-aware matching:** transparent pixels (e.g. a sticker's background) are ignored.
 - **Multi-scale search:** optionally finds the picture even when it's enlarged or shrunk.
 - **Live feedback:** a similarity meter, a "Check" button that outlines the match on screen, and a floating status pill. The pill lets clicks pass through and is excluded from screenshots, so it never confuses the search.
-- **Several macros at once:** monitoring watches every macro that has a trigger enabled. A cooldown keeps a macro from firing repeatedly on the same image.
+- **Several macros at once:** monitoring watches every macro that has a trigger enabled, using one screenshot per cycle.
+- **No runaway loops:** a cooldown, "wait until the image disappears" and a per-session run limit keep a macro from firing again and again if it didn't remove the image.
+- **No blind clicks:** on Play, a macro with an image trigger can skip repeats while its image isn't on screen, instead of clicking at the recorded spots.
+- **Reliable stop:** a configurable hotkey, a click on the tray icon, or moving the mouse into the top-left screen corner. The last two work even when an admin window has focus and hotkeys can't be seen.
+- **Configurable hotkeys:** they're kept away from other apps, so F11 won't also toggle your browser's full screen.
 - **English and Russian UI:** switch the language in the sidebar.
 - Everything is saved automatically. Macros can be exported and imported as JSON.
 
@@ -32,12 +36,16 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 
 ## Hotkeys (global)
 
+Defaults are below. Click a key in the sidebar to change it (F1–F12, Pause, Scroll Lock, Insert, Home, End, Page Up/Down).
+
 | Key | Action |
 |-----|--------|
 | `F9`  | Start / stop recording |
 | `F10` | Play the selected macro |
 | `F11` | Start / stop monitoring |
-| `F12` | Emergency stop |
+| `F12` | Stop |
+
+**Fallback stops:** click the tray icon, or move the mouse into the top-left corner of the screen. You can turn the corner stop off in the Monitoring card.
 
 ## Download
 
@@ -49,7 +57,7 @@ Grab **`MacroStudio.exe`** from the [latest release](https://github.com/araluga/
 
 ## Run from source
 
-Requires **Windows 10/11** and **Python 3.10+**.
+Requires **Windows 10/11** and **Python 3.10–3.13**. Dependency versions are pinned in `requirements.txt`.
 
 ```bash
 git clone https://github.com/araluga/macro-studio.git
@@ -76,12 +84,12 @@ This creates `dist\MacroStudio.exe` with [PyInstaller](https://pyinstaller.org/)
 | `core.py` | Recording and playback ([pynput](https://github.com/moses-palmer/pynput)), screen capture ([mss](https://github.com/BoboTiG/python-mss)), template matching ([OpenCV](https://opencv.org/) `TM_CCOEFF_NORMED`) |
 | `i18n.py` | English / Russian translations |
 
-Macros are stored in `macros.json` and app settings in `settings.json`: next to the script when run from source, in `%APPDATA%\MacroStudio` for the exe.
+Macros are stored in `macros.json` and app settings in `settings.json`: next to the script when run from source, in `%APPDATA%\MacroStudio` for the exe. A backup, `macros.json.bak`, is made once per session. If `macros.json` can't be read, it's renamed to `macros.corrupt-<date>.json` instead of being overwritten.
 
 ## Notes
 
 - Use macros responsibly: automating some games or services may break their terms of use.
-- Apps running as administrator can only be controlled when Macro Studio also runs as administrator.
+- Apps running as administrator can only be controlled, and only see hotkeys, when Macro Studio also runs as administrator. The tray icon and the corner stop always work.
 
 ## License
 

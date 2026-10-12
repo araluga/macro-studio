@@ -1,17 +1,20 @@
 """
 Macro Studio — record mouse/keyboard actions and replay them when an image appears on screen.
 
-Global hotkeys:
+Global hotkeys (configurable in the sidebar):
     F9  — start / stop recording
     F10 — play the selected macro
     F11 — start / stop monitoring (image triggers)
     F12 — emergency stop
+Fallback stops: the tray icon and moving the mouse to the top-left screen corner.
 """
 
 import copy
 import ctypes
+import ctypes.wintypes
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -24,7 +27,7 @@ from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication
 from PySide6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QApplication, QButtonGroup,
                                QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSystemTrayIcon,
                                QSizePolicy, QSlider, QSpinBox, QStyle, QStyledItemDelegate,
                                QVBoxLayout, QWidget)
 from pynput import keyboard
@@ -33,7 +36,7 @@ import core
 import i18n
 from i18n import count, tr
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 if getattr(sys, "frozen", False):
     # packaged .exe: the bundle is unpacked to a temp folder, so keep user data in %APPDATA%
@@ -69,8 +72,11 @@ QMainWindow, #root {{ background: #0e1016; }}
 #heading:focus {{ border-bottom: 2px solid {ACCENT}; }}
 #chip {{ background: #1b1f2c; border: 1px solid #252a3a; border-radius: 10px;
          padding: 3px 10px; color: #aab0c2; font-size: 9pt; }}
-#kbd {{ background: #1b1f2c; border: 1px solid #2c3246; border-bottom: 2px solid #2c3246;
-        border-radius: 6px; padding: 1px 7px; font-family: Consolas; font-size: 9pt; color: #cfd3e0; }}
+QPushButton#kbd {{ background: #1b1f2c; border: 1px solid #2c3246; border-bottom: 2px solid #2c3246;
+                   border-radius: 6px; padding: 1px 7px; font-family: Consolas; font-size: 9pt; color: #cfd3e0;
+                   min-width: 70px; }}
+QPushButton#kbd:hover {{ border-color: {ACCENT}; color: white; }}
+QPushButton#kbd::menu-indicator {{ image: none; width: 0; }}
 #regionLbl {{ color: #aab0c2; font-size: 9pt; }}
 #bigValue {{ font-size: 15pt; font-weight: 700; color: #ffffff; }}
 
@@ -146,6 +152,38 @@ def save_settings(settings):
             json.dump(settings, f, ensure_ascii=False, indent=1)
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------
+# Hotkeys
+# --------------------------------------------------------------------------
+
+HOTKEY_ACTIONS = ("record", "play", "watch", "stop")
+DEFAULT_HOTKEYS = {"record": 0x78, "play": 0x79, "watch": 0x7A, "stop": 0x7B}  # F9–F12 (virtual-key codes)
+HOTKEY_CHOICES = [(0x70 + i, f"F{i + 1}") for i in range(12)] + [
+    (0x13, "Pause"), (0x91, "Scroll Lock"), (0x2D, "Insert"), (0x24, "Home"),
+    (0x23, "End"), (0x21, "Page Up"), (0x22, "Page Down")]
+KEY_NAMES = dict(HOTKEY_CHOICES)
+WM_KEYUP, WM_SYSKEYUP = 0x0101, 0x0105
+LLKHF_INJECTED = 0x10
+
+
+def load_hotkeys(settings):
+    hk = dict(DEFAULT_HOTKEYS)
+    saved = settings.get("hotkeys") or {}
+    for action in HOTKEY_ACTIONS:
+        vk = saved.get(action)
+        if vk in KEY_NAMES:
+            hk[action] = vk
+    if len(set(hk.values())) != len(hk):  # duplicates in a hand-edited file
+        hk = dict(DEFAULT_HOTKEYS)
+    return hk
+
+
+def cursor_pos():
+    pt = ctypes.wintypes.POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    return pt.x, pt.y
 
 
 _qt_translator = None
@@ -894,6 +932,11 @@ class MainWindow(QMainWindow):
         self._selecting = False
         self._flashes = []
         self.hud = HudPill()
+        self.hotkeys = load_hotkeys(settings)
+        self._vk_action = {vk: a for a, vk in self.hotkeys.items()}
+        self.data_file = DATA_FILE
+        self._backed_up = False
+        self._corner_armed = False
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -909,13 +952,24 @@ class MainWindow(QMainWindow):
         paste.triggered.connect(self.paste_template)
         self.addAction(paste)
 
+        # emergency stop by moving the mouse into the top-left corner (works even when an
+        # elevated window has focus and the keyboard hook can't see the hotkeys)
+        self._corner_timer = QTimer(self)
+        self._corner_timer.setInterval(60)
+        self._corner_timer.timeout.connect(self._check_corner)
+
+        self.tray = QSystemTrayIcon(make_app_icon(), self)
+        self.tray.activated.connect(self._tray_activated)
+
         self.load()
         self.build_ui()
         self.refresh_list()
         self.select(0)
         self.set_mode("idle")
+        self.tray.show()
 
-        self.kb_listener = keyboard.Listener(on_press=self._kb_press, on_release=self._kb_release)
+        self.kb_listener = keyboard.Listener(on_press=self._kb_press, on_release=self._kb_release,
+                                             win32_event_filter=self._kb_filter)
         self.kb_listener.daemon = True
         self.kb_listener.start()
 
@@ -925,7 +979,11 @@ class MainWindow(QMainWindow):
         self.move(avail.center().x() - w // 2, avail.center().y() - h // 2)
         dark_title_bar(self)
 
-        self.log(tr("Ready. F9 — record, F10 — play, F11 — monitor, F12 — stop."))
+        self.log(tr("Ready. {record} — record, {play} — play, {watch} — monitor, {stop} — stop.",
+                    **{a: self.hk(a) for a in HOTKEY_ACTIONS}))
+
+    def hk(self, action):
+        return KEY_NAMES.get(self.hotkeys[action], "?")
 
     # ================= building the UI =================
 
@@ -996,11 +1054,16 @@ class MainWindow(QMainWindow):
         kl.setContentsMargins(14, 12, 14, 12)
         kl.setHorizontalSpacing(10)
         kl.setVerticalSpacing(7)
-        for i, (k, d) in enumerate([("F9", tr("Record")), ("F10", tr("Play")),
-                                    ("F11", tr("Monitor")), ("F12", tr("Stop"))]):
-            kb = QLabel(k)
-            kb.setObjectName("kbd")
-            kb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for i, (action, d) in enumerate([("record", tr("Record")), ("play", tr("Play")),
+                                         ("watch", tr("Monitor")), ("stop", tr("Stop"))]):
+            kb = button(self.hk(action), "kbd", tr("Click to change the hotkey"))
+            menu = QMenu(kb)
+            for vk, name in HOTKEY_CHOICES:
+                act = menu.addAction(name)
+                act.setCheckable(True)
+                act.setChecked(vk == self.hotkeys[action])
+                act.triggered.connect(lambda _=False, a=action, v=vk: self.set_hotkey(a, v))
+            kb.setMenu(menu)
             kl.addWidget(kb, i, 0)
             dl = QLabel(d)
             dl.setObjectName("muted")
@@ -1050,9 +1113,9 @@ class MainWindow(QMainWindow):
 
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        self.btn_record = button("", "record", "F9", self.toggle_record)
-        self.btn_play = button("▶   " + tr("Play"), "primary", "F10", self.play_selected)
-        self.btn_stop = button("■   " + tr("Stop"), "ghost", "F12", self.stop_all)
+        self.btn_record = button("", "record", self.hk("record"), self.toggle_record)
+        self.btn_play = button("▶   " + tr("Play"), "primary", self.hk("play"), self.play_selected)
+        self.btn_stop = button("■   " + tr("Stop"), "ghost", self.hk("stop"), self.stop_all)
         for b in (self.btn_record, self.btn_play, self.btn_stop):
             b.setMinimumHeight(44)
             b.setMinimumWidth(170)
@@ -1167,6 +1230,22 @@ class MainWindow(QMainWindow):
         right.addWidget(setting_row(tr("Cooldown after trigger"),
                                     tr("So the macro doesn't fire again and again on the same image."),
                                     self.sp_cooldown))
+        self.tg_wait_gone = Toggle()
+        self.tg_wait_gone.toggled.connect(self.on_option_change)
+        right.addWidget(setting_row(tr("Wait until the image disappears"),
+                                    tr("After a run, the macro can fire again only once the image has left the screen."),
+                                    self.tg_wait_gone))
+        self.sp_max_runs = Spin(0, 100000, special="∞")
+        self.sp_max_runs.valueChanged.connect(self.on_option_change)
+        right.addWidget(setting_row(tr("Max runs per monitoring session"),
+                                    tr("0 — unlimited. Protects against endless runs if the macro doesn't remove the image."),
+                                    self.sp_max_runs))
+        self.tg_require = Toggle()
+        self.tg_require.toggled.connect(self.on_option_change)
+        right.addWidget(setting_row(tr("Play only when the image is found"),
+                                    tr("On Play, a repeat is skipped if the image isn't on screen, instead of clicking "
+                                       "at the recorded spots."),
+                                    self.tg_require))
         body.addLayout(right, 1)
         lay.addLayout(body)
         return frame
@@ -1175,7 +1254,7 @@ class MainWindow(QMainWindow):
         frame, lay = card(tr("Playback"), tr("How to replay the recorded actions."))
         self.sp_repeats = Spin(0, 100000, special="∞")
         self.sp_repeats.valueChanged.connect(self.on_option_change)
-        lay.addWidget(setting_row(tr("Repeats"), tr("0 — forever, until you press F12"), self.sp_repeats))
+        lay.addWidget(setting_row(tr("Repeats"), tr("0 — forever, until you press {key}", key=self.hk("stop")), self.sp_repeats))
         self.sp_rdelay = DSpin(0, 3600, 0.1, tr(" s"))
         self.sp_rdelay.valueChanged.connect(self.on_option_change)
         lay.addWidget(setting_row(tr("Delay between repeats"), None, self.sp_rdelay))
@@ -1206,7 +1285,7 @@ class MainWindow(QMainWindow):
     def _build_watch_card(self):
         frame, lay = card(tr("Monitoring"),
                           tr("Watches the screen and runs macros with an enabled trigger as soon as their image is found."))
-        self.btn_watch = button("", "watch", "F11", self.toggle_watch)
+        self.btn_watch = button("", "watch", self.hk("watch"), self.toggle_watch)
         self.btn_watch.setMinimumHeight(44)
         lay.addWidget(self.btn_watch)
         self.sp_interval = Spin(50, 60000, tr(" ms"))
@@ -1219,6 +1298,13 @@ class MainWindow(QMainWindow):
         self.tg_hide.setChecked(bool(self.settings.get("minimize", True)))
         self.tg_hide.toggled.connect(self._on_app_setting)
         lay.addWidget(setting_row(tr("Minimize window"), tr("During playback and monitoring."), self.tg_hide))
+        self.tg_failsafe = Toggle()
+        self.tg_failsafe.setChecked(bool(self.settings.get("failsafe", True)))
+        self.tg_failsafe.toggled.connect(self._on_app_setting)
+        lay.addWidget(setting_row(tr("Corner emergency stop"),
+                                  tr("Move the mouse into the top-left corner of the screen to stop playback or "
+                                     "monitoring. Works even when hotkeys can't (e.g. over admin windows)."),
+                                  self.tg_failsafe))
         self.watch_info = QLabel()
         self.watch_info.setObjectName("hint")
         self.watch_info.setWordWrap(True)
@@ -1253,6 +1339,10 @@ class MainWindow(QMainWindow):
         apply_qt_translator(lang)
         self.settings["language"] = lang
         save_settings(self.settings)
+        self.rebuild_ui()
+
+    def rebuild_ui(self):
+        """Recreates all widgets (after a language or hotkey change), keeping the state."""
         log_text = self.log_box.toPlainText()
         self.setLocale(QLocale())  # new widgets inherit the window's number format
         self.build_ui()
@@ -1265,7 +1355,87 @@ class MainWindow(QMainWindow):
     def _on_app_setting(self, *_):
         self.settings["interval_ms"] = self.sp_interval.value()
         self.settings["minimize"] = self.tg_hide.isChecked()
+        self.settings["failsafe"] = self.tg_failsafe.isChecked()
         save_settings(self.settings)
+
+    # ================= hotkeys, tray and emergency stop =================
+
+    def set_hotkey(self, action, vk):
+        if self.mode != "idle" or self.hotkeys[action] == vk:
+            return
+        for other, ovk in self.hotkeys.items():  # the key was used by another action: swap them
+            if ovk == vk:
+                self.hotkeys[other] = self.hotkeys[action]
+        self.hotkeys[action] = vk
+        self._vk_action = {v: a for a, v in self.hotkeys.items()}
+        self.settings["hotkeys"] = dict(self.hotkeys)
+        save_settings(self.settings)
+        QTimer.singleShot(0, self.rebuild_ui)  # the clicked menu belongs to the old UI
+
+    def _kb_filter(self, msg, data):
+        """Low-level keyboard hook filter: handles our hotkeys and keeps them away from other apps
+        (otherwise F11 would also toggle browser full screen, F10 open window menus, etc.)."""
+        action = self._vk_action.get(data.vkCode)
+        if action is None or data.flags & LLKHF_INJECTED:
+            return True
+        if msg in (WM_KEYUP, WM_SYSKEYUP):
+            self.bridge.hotkey.emit(action)
+        self.kb_listener.suppress_event()
+
+    def _kb_press(self, key):
+        self.recorder.key(key, True)
+
+    def _kb_release(self, key):
+        self.recorder.key(key, False)
+
+    def _on_hotkey(self, name):
+        if self._selecting:
+            return
+        {"record": self.toggle_record, "play": self.play_selected,
+         "watch": self.toggle_watch, "stop": self.stop_all}[name]()
+
+    def _update_tray(self):
+        menu = QMenu(self)
+        menu.addAction(tr("Show window"), self._show_window)
+        stop = menu.addAction(f"■  {tr('Stop')}  ({self.hk('stop')})", self.stop_all)
+        stop.setEnabled(self.mode != "idle")
+        watch = menu.addAction(tr("Stop monitoring") if self.mode == "watch" else tr("Start monitoring"),
+                               self.toggle_watch)
+        watch.setEnabled(self.mode in ("idle", "watch"))
+        menu.addSeparator()
+        menu.addAction(tr("Quit"), self.close)
+        old = self.tray.contextMenu()
+        self.tray.setContextMenu(menu)
+        if old is not None:
+            old.deleteLater()
+        if self.mode == "idle":
+            self.tray.setToolTip("Macro Studio")
+        else:
+            self.tray.setToolTip("Macro Studio — " + tr("click this icon to stop"))
+
+    def _tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger and self.mode != "idle":
+            self.stop_all()  # a click on the tray icon is a reliable stop button
+        elif reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._show_window()
+
+    def _show_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _check_corner(self):
+        if self.mode not in ("play", "watch") or not self.tg_failsafe.isChecked():
+            return
+        try:
+            x, y = cursor_pos()
+        except Exception:
+            return
+        in_corner = x <= 1 and y <= 1
+        if in_corner and self._corner_armed:
+            self.log(tr("Emergency stop: the mouse was moved into the top-left corner."))
+            self.stop_all()
+        self._corner_armed = not in_corner  # only fires after the cursor has been outside the corner
 
     # ================= state and log =================
 
@@ -1305,15 +1475,31 @@ class MainWindow(QMainWindow):
         self.listw.setEnabled(mode == "idle")
         if mode == "idle":
             self.hud.hide()
+        if mode in ("play", "watch"):
+            self._corner_armed = False
+            self._corner_timer.start()
+        else:
+            self._corner_timer.stop()
+        self._update_tray()
 
     # ================= persistence =================
 
     def load(self):
-        if os.path.exists(DATA_FILE):
+        if os.path.exists(self.data_file):
             try:
-                self.macros = core.load_macros(DATA_FILE)
+                self.macros = core.load_macros(self.data_file)
             except Exception as e:
-                QMessageBox.critical(self, tr("Error"), tr("Could not read {path}:\n{err}", path=DATA_FILE, err=e))
+                # never overwrite a file we couldn't read: move it aside first
+                bad = os.path.splitext(self.data_file)[0] + time.strftime(".corrupt-%Y%m%d-%H%M%S.json")
+                try:
+                    os.replace(self.data_file, bad)
+                    note = tr("The damaged file was renamed to:\n{path}\nso it won't be overwritten.", path=bad)
+                except OSError:
+                    self.data_file = os.path.splitext(self.data_file)[0] + ".new.json"
+                    note = tr("New macros will be saved to:\n{path}\nso the damaged file won't be overwritten.",
+                              path=self.data_file)
+                QMessageBox.critical(self, tr("Error"), tr("Could not read {path}:\n{err}", path=DATA_FILE, err=e)
+                                     + "\n\n" + note)
         if not self.macros:
             self.macros = [core.new_macro(tr("My first macro"))]
 
@@ -1323,7 +1509,10 @@ class MainWindow(QMainWindow):
     def save(self):
         self._save_timer.stop()
         try:
-            core.save_macros(DATA_FILE, self.macros)
+            if not self._backed_up and os.path.exists(self.data_file):
+                shutil.copy2(self.data_file, self.data_file + ".bak")  # one backup per session
+            self._backed_up = True
+            core.save_macros(self.data_file, self.macros)
         except Exception as e:
             self.log(tr("Save error: {err}", err=e))
 
@@ -1489,6 +1678,9 @@ class MainWindow(QMainWindow):
         self.tg_relative.setChecked(t["relative"])
         self.tg_multiscale.setChecked(t["multiscale"])
         self.sp_cooldown.setValue(float(t["cooldown"]))
+        self.tg_wait_gone.setChecked(t["wait_gone"])
+        self.sp_max_runs.setValue(int(t["max_runs"]))
+        self.tg_require.setChecked(t["require"])
         self.sp_repeats.setValue(int(m["repeats"]))
         self.sp_rdelay.setValue(float(m["repeat_delay"]))
         self.sl_speed.setValue(int(round(float(m["speed"]) * 100)))
@@ -1514,6 +1706,9 @@ class MainWindow(QMainWindow):
         t["relative"] = self.tg_relative.isChecked()
         t["multiscale"] = self.tg_multiscale.isChecked()
         t["cooldown"] = self.sp_cooldown.value()
+        t["wait_gone"] = self.tg_wait_gone.isChecked()
+        t["max_runs"] = self.sp_max_runs.value()
+        t["require"] = self.tg_require.isChecked()
         m["repeats"] = self.sp_repeats.value()
         m["repeat_delay"] = self.sp_rdelay.value()
         m["speed"] = self.sl_speed.value() / 100
@@ -1688,7 +1883,7 @@ class MainWindow(QMainWindow):
         def run():
             t0 = time.perf_counter()
             try:
-                score, rect = core.find_template(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
+                score, rect, _ = core.find_template(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
             except Exception as e:
                 self.log(tr("Search error: {err}", err=e))
                 score, rect = 0.0, None
@@ -1716,25 +1911,6 @@ class MainWindow(QMainWindow):
         if m is self.macro():
             self.meter.set_values(score, m["trigger"]["threshold"])
 
-    # ================= hotkeys =================
-
-    def _kb_press(self, key):
-        self.recorder.key(key, True)
-
-    def _kb_release(self, key):
-        names = {core.HOTKEY_RECORD: "record", core.HOTKEY_PLAY: "play",
-                 core.HOTKEY_WATCH: "watch", core.HOTKEY_STOP: "stop"}
-        if key in names:
-            self.bridge.hotkey.emit(names[key])
-        else:
-            self.recorder.key(key, False)
-
-    def _on_hotkey(self, name):
-        if self._selecting:
-            return
-        {"record": self.toggle_record, "play": self.play_selected,
-         "watch": self.toggle_watch, "stop": self.stop_all}[name]()
-
     # ================= recording =================
 
     def toggle_record(self):
@@ -1743,7 +1919,7 @@ class MainWindow(QMainWindow):
         elif self.mode == "idle":
             self.start_record()
         else:
-            self.log(tr("Stop the current action first (F12)."))
+            self.log(tr("Stop the current action first ({key}).", key=self.hk("stop")))
 
     def start_record(self):
         m = self.macro()
@@ -1768,23 +1944,24 @@ class MainWindow(QMainWindow):
         tpl = self.templates.get(m)
         if tpl is not None:
             try:
-                score, rect = core.find_template(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
+                score, rect, scale = core.find_template(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
             except Exception:
-                score, rect = 0.0, None
+                score, rect, scale = 0.0, None, 1.0
             pct = f"{score * 100:.0f}"
             if rect and score * 100 >= m["trigger"]["threshold"]:
                 m["anchor"] = list(core.rect_center(rect))
+                m["anchor_scale"] = scale
                 anchor_msg = tr(" Image found ({score}%) — clicks will be anchored to it.", score=pct)
             else:
                 anchor_msg = tr(" Image not on screen ({score}%) — no anchor.", score=pct)
         self.recorder.start(m["record_keyboard"])
         self._rec_timer.start()
         self._rec_tick()
-        self.log(tr("Recording “{name}” started. F9 — stop.", name=m["name"]) + anchor_msg)
+        self.log(tr("Recording “{name}” started. {key} — stop.", name=m["name"], key=self.hk("record")) + anchor_msg)
 
     def _rec_tick(self):
         s = int(self.recorder.elapsed())
-        self._show_hud(tr("REC  {time}   ·   {events}   ·   F9 — stop", time=f"{s // 60:02d}:{s % 60:02d}",
+        self._show_hud(tr("REC  {time}   ·   {events}   ·   {key} — stop", key=self.hk("record"), time=f"{s // 60:02d}:{s % 60:02d}",
                           events=count(len(self.recorder.events), "event")), RED)
 
     def stop_record(self):
@@ -1822,21 +1999,38 @@ class MainWindow(QMainWindow):
 
     def _play_worker(self, m):
         n = 0
+        missing = False  # log "not found" only when the state changes, not on every repeat
         try:
             time.sleep(0.3)
             repeats = m["repeats"]
+            t = m["trigger"]
+            tpl = self.templates.get(m) if t["enabled"] else None
             while not self.stop_event.is_set() and (repeats == 0 or n < repeats):
                 n += 1
-                offset = (0, 0)
-                tpl = self.templates.get(m)
-                if tpl is not None and m["trigger"]["relative"] and m.get("anchor"):
-                    score, rect = core.find_template(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
-                    if score * 100 >= m["trigger"]["threshold"]:
-                        offset = core.click_offset(m, rect)
+                transform = None
+                if tpl is not None and (t["require"] or (t["relative"] and m.get("anchor"))):
+                    score, rect, scale = core.find_template(tpl, t["region"], t["multiscale"])
+                    pct = f"{score * 100:.0f}"
+                    if score * 100 >= t["threshold"]:
+                        transform = core.click_transform(m, rect, scale)
+                        missing = False
+                    elif t["require"]:
+                        if not missing:
+                            self.log(tr("Image for “{name}” not found ({score}%) — waiting for it, repeats are skipped.",
+                                        name=m["name"], score=pct))
+                        missing = True
+                        self.bridge.hud.emit(tr("WAITING FOR IMAGE  “{name}”   ·   {key} — stop",
+                                                name=m["name"], key=self.hk("stop")), ORANGE)
+                        self.stop_event.wait(max(m["repeat_delay"], 0.5))
+                        continue
+                    elif not missing:
+                        self.log(tr("Image for “{name}” not found ({score}%) — clicking at the recorded positions.",
+                                    name=m["name"], score=pct))
+                        missing = True
                 progress = tr("{n} of {total}", n=n, total=repeats if repeats else "∞")
-                self.bridge.hud.emit(tr("PLAYING  “{name}”   ·   {progress}   ·   F12 — stop",
-                                        name=m["name"], progress=progress), ACCENT2)
-                self.player.run(m, offset)
+                self.bridge.hud.emit(tr("PLAYING  “{name}”   ·   {progress}   ·   {key} — stop",
+                                        name=m["name"], progress=progress, key=self.hk("stop")), ACCENT2)
+                self.player.run(m, transform)
                 if repeats == 0 or n < repeats:
                     self.stop_event.wait(m["repeat_delay"])
             self.log(tr("Playback of “{name}” finished ({times}).", name=m["name"], times=count(n, "time")))
@@ -1868,31 +2062,48 @@ class MainWindow(QMainWindow):
         self.log(tr("Monitoring started: {names}", names=quoted_names(active)))
 
     def _watch_worker(self, active, interval):
-        last_fire = {id(m): 0.0 for m in active}
+        state = {id(m): {"last": 0.0, "runs": 0, "armed": True} for m in active}
         fired = 0
         try:
             while not self.stop_event.is_set():
+                pending = [m for m in active
+                           if not m["trigger"]["max_runs"] or state[id(m)]["runs"] < m["trigger"]["max_runs"]]
+                if not pending:
+                    self.log(tr("All macros reached their run limit — monitoring stopped."))
+                    break
+                frame = core.grab_screen(None)  # one screenshot per cycle, shared by all macros
                 parts = []
-                for m in active:
+                for m in pending:
                     if self.stop_event.is_set():
                         break
-                    t = m["trigger"]
-                    score, rect = core.find_template(self.templates.get(m), t["region"], t["multiscale"])
+                    t, st = m["trigger"], state[id(m)]
+                    score, rect, scale = core.find_template(self.templates.get(m), t["region"], t["multiscale"],
+                                                            frame=frame)
+                    found = score * 100 >= t["threshold"]
+                    if not found:
+                        st["armed"] = True  # the image is gone: it may trigger again
                     self.bridge.meter.emit(m, score)
                     parts.append(f"{m['name']} {score * 100:.0f}%")
-                    if score * 100 >= t["threshold"] and time.perf_counter() - last_fire[id(m)] >= t["cooldown"]:
-                        offset = core.click_offset(m, rect)
+                    if found and st["armed"] and time.perf_counter() - st["last"] >= t["cooldown"]:
+                        transform = core.click_transform(m, rect, scale)
                         fired += 1
+                        st["runs"] += 1
                         msg = tr("Found “{name}” ({score}%) at ({x}, {y}) — running",
                                  name=m["name"], score=f"{score * 100:.1f}", x=rect[0], y=rect[1])
-                        if offset != (0, 0):
-                            msg += tr(", offset {offset}", offset=offset)
+                        if transform:
+                            msg += tr(", offset {offset}", offset=(transform[2] - transform[0], transform[3] - transform[1]))
                         self.log(msg)
-                        self.bridge.hud.emit(tr("RUNNING  “{name}”   ·   F12 — stop", name=m["name"]), ACCENT2)
-                        self.player.run(m, offset)
-                        last_fire[id(m)] = time.perf_counter()
-                self.bridge.hud.emit(tr("MONITORING   ·   {parts}   ·   fired: {n}   ·   F11 — stop",
-                                        parts="  ·  ".join(parts), n=fired), GREEN)
+                        self.bridge.hud.emit(tr("RUNNING  “{name}”   ·   {key} — stop",
+                                                name=m["name"], key=self.hk("stop")), ACCENT2)
+                        self.player.run(m, transform)
+                        st["last"] = time.perf_counter()
+                        if t["wait_gone"]:
+                            st["armed"] = False
+                        if t["max_runs"] and st["runs"] >= t["max_runs"]:
+                            self.log(tr("“{name}” reached its limit of {n} runs.", name=m["name"], n=t["max_runs"]))
+                        frame = core.grab_screen(None)  # the screen changed: fresh shot for the next macros
+                self.bridge.hud.emit(tr("MONITORING   ·   {parts}   ·   fired: {n}   ·   {key} — stop",
+                                        parts="  ·  ".join(parts), n=fired, key=self.hk("watch")), GREEN)
                 self.stop_event.wait(interval)
         except Exception as e:
             self.log(tr("Monitoring error: {err}", err=e))
@@ -1924,6 +2135,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.hud.close()
+        self.tray.hide()
         super().closeEvent(e)
         QApplication.quit()
 

@@ -4,6 +4,9 @@ __pycache__/
 
 # personal data
 macros.json
+macros.json.bak
+macros.corrupt-*.json
+macros.new.json
 settings.json
 
 # build output
