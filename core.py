@@ -37,7 +37,7 @@ def new_macro(name):
         "record_keyboard": False,
         "trigger": {
             "enabled": False,
-            "template": None,    # PNG as base64
+            "templates": [],     # images as base64 PNG; the trigger fires when any of them is found
             "region": None,      # [left, top, width, height] or None = full screen
             "threshold": 85,     # %
             "relative": True,
@@ -61,9 +61,20 @@ def new_macro(name):
 def fix_macro(m):
     base = new_macro(m.get("name", "Macro"))
     nested = {key: {**base[key], **(m.get(key) or {})} for key in ("trigger", "command")}
+    trig = nested["trigger"]
+    old = trig.pop("template", None)  # files from 1.0–1.2 had a single image
+    if old and not trig["templates"]:
+        trig["templates"] = [old]
     base.update(m)
     base.update(nested)
     return base
+
+
+MAX_IMAGES = 12
+
+
+def has_images(m):
+    return bool(m["trigger"]["templates"])
 
 
 def has_command(m):
@@ -192,21 +203,27 @@ class Template:
 
 
 class TemplateCache:
+    """Decoded templates by their PNG data, shared by all macros."""
+
     def __init__(self):
         self._cache = {}
         self._lock = threading.Lock()
 
     def get(self, m):
-        b64 = m["trigger"]["template"]
-        if not b64:
+        """-> list of Template for the macro's images, or None if it has none."""
+        images = m["trigger"]["templates"]
+        if not images:
             return None
         with self._lock:
-            cached = self._cache.get(id(m))
-            if cached and cached[0] is b64:
-                return cached[1]
-            tpl = Template(b64_to_image(b64))
-            self._cache[id(m)] = (b64, tpl)
-            return tpl
+            result = []
+            for b64 in images:
+                tpl = self._cache.get(b64)
+                if tpl is None:
+                    tpl = self._cache[b64] = Template(b64_to_image(b64))
+                result.append(tpl)
+            if len(self._cache) > 64:  # forget removed images; others are simply decoded again when needed
+                self._cache = {b64: self._cache[b64] for b64 in images}
+            return result
 
 
 SCALES = [1.0, 0.9, 1.1, 0.8, 1.25, 0.7, 1.4, 0.6, 1.6, 0.5]
@@ -283,6 +300,19 @@ def find_template(tpl, region=None, multiscale=False, frame=None):
     return max(score, 0.0), (rect[0] + ox, rect[1] + oy, rect[2], rect[3]), scale
 
 
+def find_any(tpls, region=None, multiscale=False, frame=None):
+    """Searches for several images at once (one screenshot) and returns the best match:
+    (similarity 0..1, rect or None, scale, index of the image that matched or -1)."""
+    if frame is None:
+        frame = grab_screen(region)
+    best = (0.0, None, 1.0, -1)
+    for i, tpl in enumerate(tpls or []):
+        score, rect, scale = find_template(tpl, region, multiscale, frame)
+        if rect is not None and (best[1] is None or score > best[0]):
+            best = (score, rect, scale, i)
+    return best
+
+
 def rect_center(rect):
     return rect[0] + rect[2] // 2, rect[1] + rect[3] // 2
 
@@ -307,14 +337,16 @@ CREATE_NEW_CONSOLE = 0x00000010
 _CMD_DIR = os.path.join(tempfile.gettempdir(), "MacroStudio")
 
 
-def match_env(m, score=None, rect=None):
-    """Environment variables a command can use: %MATCH_X% in cmd, $env:MATCH_X in PowerShell."""
+def match_env(m, score=None, rect=None, index=-1):
+    """Environment variables a command can use: %MATCH_X% in cmd, $env:MATCH_X in PowerShell.
+    MATCH_INDEX is the number (1, 2, …) of the image that was found."""
     env = {"MACRO_NAME": m["name"], "MATCH_FOUND": "0", "MATCH_X": "", "MATCH_Y": "",
-           "MATCH_W": "", "MATCH_H": "", "MATCH_SCORE": ""}
+           "MATCH_W": "", "MATCH_H": "", "MATCH_SCORE": "", "MATCH_INDEX": ""}
     if rect:
         cx, cy = rect_center(rect)
         env.update(MATCH_FOUND="1", MATCH_X=str(cx), MATCH_Y=str(cy), MATCH_W=str(rect[2]),
-                   MATCH_H=str(rect[3]), MATCH_SCORE=f"{score * 100:.1f}" if score is not None else "")
+                   MATCH_H=str(rect[3]), MATCH_SCORE=f"{score * 100:.1f}" if score is not None else "",
+                   MATCH_INDEX=str(index + 1) if index >= 0 else "")
     return env
 
 

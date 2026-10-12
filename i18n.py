@@ -23,6 +23,7 @@ _PLURALS = {
     "event": (("event", "events"), ("событие", "события", "событий")),
     "click": (("click", "clicks"), ("клик", "клика", "кликов")),
     "time": (("time", "times"), ("раз", "раза", "раз")),
+    "image": (("image", "images"), ("картинка", "картинки", "картинок")),
 }
 
 
@@ -85,15 +86,22 @@ RU = {
 
     # trigger card
     "Image trigger": "Триггер по картинке",
-    "When this image appears on screen, the macro runs automatically (in monitoring mode).":
-        "Когда эта картинка появится на экране, макрос выполнится сам (в режиме мониторинга).",
+    "When one of these images appears on screen, the macro runs automatically (in monitoring mode).":
+        "Когда одна из этих картинок появится на экране, макрос выполнится сам (в режиме мониторинга).",
     "Enable the trigger for this macro": "Включить триггер для этого макроса",
     "Paste": "Вставить",
     "Ctrl+V — from clipboard": "Ctrl+V — из буфера обмена",
     "From screen": "С экрана",
     "Select the image directly on screen": "Выделить картинку прямо на экране",
     "File…": "Файл…",
-    "Remove": "Убрать",
+    "Remove all": "Убрать все",
+    "Remove this image": "Убрать эту картинку",
+    "Add several variants of the image — the trigger fires when any of them is found.":
+        "Добавьте несколько вариантов картинки — триггер сработает, когда найдена любая из них.",
+    "{images} · any of them": "{images} · любая из них",
+    "A macro can have up to {n} images.": "В макросе может быть не больше {n} картинок.",
+    "This image is already in “{name}”.": "Эта картинка уже есть в «{name}».",
+    ", image #{n}": ", картинка №{n}",
     "Search area": "Где искать",
     "Full screen": "Весь экран",
     "Region": "Область",
@@ -212,7 +220,7 @@ RU = {
     "Imported macros: {n}": "Импортировано макросов: {n}",
     "Image": "Картинка",
     "The image is too small.": "Картинка слишком маленькая.",
-    "Image for “{name}” added ({w}×{h}).": "Картинка для «{name}» добавлена ({w}×{h}).",
+    "Image {n} for “{name}” added ({w}×{h}).": "Картинка {n} для «{name}» добавлена ({w}×{h}).",
     "Clipboard": "Буфер обмена",
     "There is no image in the clipboard.\n\nCopy a sticker (right-click → Copy) or take a screenshot with Win+Shift+S.":
         "В буфере обмена нет картинки.\n\nСкопируйте стикер (ПКМ → Копировать) или сделайте скриншот Win+Shift+S.",

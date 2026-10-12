@@ -13,6 +13,7 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 - **Record and replay** mouse clicks, movement, scrolling and (optionally) the keyboard.
 - **Repeats, speed, delay:** loop a macro N times or forever, at 0.25×–5× speed, or replay only the clicks without the mouse path.
 - **Image triggers:** give a macro a picture (paste, drag & drop, open a file, or snip it straight from the screen). In monitoring mode, the macro runs as soon as that picture appears with a similarity above your threshold.
+- **Several images per macro:** add up to 12 variants (e.g. different versions of a sticker). The macro fires when **any** of them is found, so you don't have to copy the macro. Different images that need *different* actions go into separate macros; monitoring watches all of them at once.
 - **Terminal commands:** a macro can run a cmd or PowerShell script before or after its clicks, or on its own with no clicks at all. The command gets the match position as variables (`%MATCH_X%`, `%MATCH_Y%`, …).
 - **Clicks follow the image:** if the picture shows up somewhere else on screen, the recorded clicks are shifted to match.
 - **Search area:** look for the picture on the whole screen (all monitors) or only in a selected region.
@@ -30,7 +31,7 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 ## Example: auto-delete a Telegram sticker
 
 1. Create a macro called "Delete sticker".
-2. Copy the sticker (right-click → Copy, or `Win+Shift+S`) and press **Ctrl+V** in the app. You can also drop an image file or click **From screen** and select the sticker.
+2. Copy the sticker (right-click → Copy, or `Win+Shift+S`) and press **Ctrl+V** in the app. You can also drop an image file or click **From screen** and select the sticker. If the sticker has several versions, add each one the same way: they appear as numbered previews, and hovering one shows **×** to remove it.
 3. Choose where to look: **Full screen** or a **Region**, and set the similarity threshold (e.g. 85%). Press **Check** to see the current similarity and where the match is.
 4. With the sticker visible, record the actions: **F9** → right-click the sticker → Delete → **F9**. When recording starts, the app remembers where the sticker was.
 5. Press **F11** to start monitoring. Whenever the sticker appears, the macro deletes it, even if it's in a different place.
@@ -54,6 +55,7 @@ Variables you can use:
 | `MATCH_X`, `MATCH_Y` | Center of the found image, in screen pixels |
 | `MATCH_W`, `MATCH_H` | Size of the found image |
 | `MATCH_SCORE` | Similarity in %, e.g. `93.4` |
+| `MATCH_INDEX` | Which of the macro's images was found: `1`, `2`, … |
 
 In cmd you write `%MATCH_X%`, in PowerShell `$env:MATCH_X`. For example:
 

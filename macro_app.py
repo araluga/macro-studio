@@ -13,6 +13,7 @@ import copy
 import ctypes
 import ctypes.wintypes
 import json
+import math
 import os
 import shutil
 import sys
@@ -20,7 +21,7 @@ import threading
 import time
 
 from PIL import Image
-from PySide6.QtCore import (QLibraryInfo, QLocale, QObject, QRect, QRectF, QSize, Qt, QTimer, QTranslator,
+from PySide6.QtCore import (QLibraryInfo, QLocale, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QTranslator,
                             QVariantAnimation, Signal)
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QImage,
                            QLinearGradient, QPainter, QPainterPath, QPen, QPixmap)
@@ -36,7 +37,7 @@ import core
 import i18n
 from i18n import count, tr
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 if getattr(sys, "frozen", False):
     # packaged .exe: the bundle is unpacked to a temp folder, so keep user data in %APPDATA%
@@ -430,84 +431,167 @@ class SimilarityMeter(QWidget):
 
 
 class ImageDrop(QWidget):
-    """Template image preview; accepts dropped files and images."""
+    """Previews of the trigger images: any of them fires the trigger. Accepts dropped files and
+    images; hovering a preview shows a button that removes that image."""
 
     imageDropped = Signal(object)
+    removeRequested = Signal(int)
 
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
+        self.setMouseTracking(True)
         self.setFixedSize(220, 168)
-        self.pixmap = None
-        self.caption = ""
-        self._hover = False
+        self.pixmaps = []
+        self.sizes = []
+        self.matched = -1      # image found by the last check
+        self._drag = False
+        self._hover_idx = -1
 
-    def set_image(self, img):
-        if img is None:
-            self.pixmap, self.caption = None, ""
-        else:
-            self.pixmap = pil_to_qpixmap(img)
-            self.caption = f"{img.width} × {img.height} px"
+    def set_images(self, images):
+        self.pixmaps = [pil_to_qpixmap(i) for i in images]
+        self.sizes = [(i.width, i.height) for i in images]
+        self.matched = -1
+        self._hover_idx = -1
         self.update()
+
+    def set_matched(self, idx):
+        self.matched = idx
+        self.update()
+
+    def _frame(self):
+        return QRectF(1, 1, self.width() - 2, self.height() - 2)
+
+    def _cells(self):
+        n = len(self.pixmaps)
+        if n == 0:
+            return []
+        area = self._frame().adjusted(8, 8, -8, -26)
+        if n == 1:
+            return [area]
+        cols = 2 if n <= 4 else 3 if n <= 9 else 4
+        rows = math.ceil(n / cols)
+        gap = 5
+        cw = (area.width() - gap * (cols - 1)) / cols
+        ch = (area.height() - gap * (rows - 1)) / rows
+        return [QRectF(area.left() + (i % cols) * (cw + gap), area.top() + (i // cols) * (ch + gap), cw, ch)
+                for i in range(n)]
+
+    @staticmethod
+    def _close_rect(cell):
+        return QRectF(cell.right() - 19, cell.top() + 3, 16, 16)
+
+    def mouseMoveEvent(self, e):
+        pos = e.position()
+        cells = self._cells()
+        idx = next((i for i, c in enumerate(cells) if c.contains(pos)), -1)
+        if idx != self._hover_idx:
+            self._hover_idx = idx
+            self.update()
+        over_close = idx >= 0 and self._close_rect(cells[idx]).contains(pos)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if over_close else Qt.CursorShape.ArrowCursor)
+        self.setToolTip(tr("Remove this image") if over_close else "")
+
+    def leaveEvent(self, _e):
+        self._hover_idx = -1
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        for i, c in enumerate(self._cells()):
+            if self._close_rect(c).contains(e.position()):
+                self.removeRequested.emit(i)
+                return
 
     def dragEnterEvent(self, e):
         md = e.mimeData()
         if md.hasImage() or md.hasUrls():
-            self._hover = True
+            self._drag = True
             self.update()
             e.acceptProposedAction()
 
     def dragLeaveEvent(self, _e):
-        self._hover = False
+        self._drag = False
         self.update()
 
     def dropEvent(self, e):
-        self._hover = False
+        self._drag = False
         self.update()
         md = e.mimeData()
-        img = None
+        images = []
         if md.hasUrls():
-            for url in md.urls():
+            for url in md.urls():  # several files at once = several variants
                 try:
                     img = Image.open(url.toLocalFile())
                     img.load()
-                    break
+                    images.append(img)
                 except Exception:
                     continue
-        if img is None and md.hasImage():
+        if not images and md.hasImage():
             qimg = md.imageData()
             if isinstance(qimg, QImage) and not qimg.isNull():
-                img = qimage_to_pil(qimg)
-        if img is not None:
+                images.append(qimage_to_pil(qimg))
+        for img in images:
             self.imageDropped.emit(img)
 
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(1, 1, self.width() - 2, self.height() - 2)
+        r = self._frame()
         clip = QPainterPath()
         clip.addRoundedRect(r, 12, 12)
         p.setClipPath(clip)
         p.fillRect(r, QColor("#10131b"))
-        if self.pixmap:
+        n = len(self.pixmaps)
+        if n:
             s = 10  # checkerboard so transparency is visible
             for y in range(0, self.height(), s):
                 for x in range(0, self.width(), s):
                     if (x // s + y // s) % 2:
                         p.fillRect(x, y, s, s, QColor("#181b25"))
-            area = r.adjusted(12, 12, -12, -28)
-            pm = self.pixmap
-            scale = min(area.width() / pm.width(), area.height() / pm.height(), 3.0)
-            w, h = pm.width() * scale, pm.height() * scale
-            target = QRectF(area.center().x() - w / 2, area.center().y() - h / 2, w, h)
-            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, scale < 1)
-            p.drawPixmap(target, pm, QRectF(pm.rect()))
+            small = QFont(self.font())
+            small.setPointSizeF(8)
+            small.setBold(True)
+            for i, (cell, pm) in enumerate(zip(self._cells(), self.pixmaps)):
+                if n > 1:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(16, 19, 27, 150))
+                    p.drawRoundedRect(cell, 8, 8)
+                inner = cell.adjusted(4, 4, -4, -4)
+                scale = min(inner.width() / pm.width(), inner.height() / pm.height(), 3.0)
+                w, h = pm.width() * scale, pm.height() * scale
+                target = QRectF(inner.center().x() - w / 2, inner.center().y() - h / 2, w, h)
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, scale < 1)
+                p.drawPixmap(target, pm, QRectF(pm.rect()))
+                if i == self.matched:
+                    p.setPen(QPen(QColor(GREEN), 2))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawRoundedRect(cell.adjusted(1, 1, -1, -1), 8, 8)
+                if n > 1:  # number badge, matches %MATCH_INDEX%
+                    badge = QRectF(cell.left() + 3, cell.top() + 3, 16, 16)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(GREEN) if i == self.matched else QColor(42, 47, 72, 230))
+                    p.drawEllipse(badge)
+                    p.setFont(small)
+                    p.setPen(QColor("#0e1016") if i == self.matched else QColor("white"))
+                    p.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(i + 1))
+                if i == self._hover_idx:
+                    btn = self._close_rect(cell)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(RED))
+                    p.drawEllipse(btn)
+                    p.setPen(QPen(QColor("white"), 1.6))
+                    c = btn.center()
+                    p.drawLine(QPointF(c.x() - 3.5, c.y() - 3.5), QPointF(c.x() + 3.5, c.y() + 3.5))
+                    p.drawLine(QPointF(c.x() - 3.5, c.y() + 3.5), QPointF(c.x() + 3.5, c.y() - 3.5))
             f = QFont(self.font())
             f.setPointSizeF(8.5)
             p.setFont(f)
             p.setPen(QColor(MUTED))
-            p.drawText(r.adjusted(0, 0, 0, -7), Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
-                       self.caption)
+            caption = (f"{self.sizes[0][0]} × {self.sizes[0][1]} px" if n == 1
+                       else tr("{images} · any of them", images=count(n, "image")))
+            p.drawText(r.adjusted(0, 0, 0, -6), Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, caption)
         else:
             f = QFont(self.font())
             f.setPointSizeF(22)
@@ -519,8 +603,8 @@ class ImageDrop(QWidget):
             p.setPen(QColor(MUTED))
             p.drawText(r.adjusted(0, 40, 0, 0), Qt.AlignmentFlag.AlignCenter, tr("Drop an image here\nor press Ctrl+V"))
         p.setClipping(False)
-        pen = QPen(QColor(ACCENT if self._hover else "#2c3246"), 1.5)
-        if not self.pixmap:
+        pen = QPen(QColor(ACCENT if self._drag else "#2c3246"), 1.5)
+        if not n:
             pen.setStyle(Qt.PenStyle.DashLine)
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1154,7 +1238,7 @@ class MainWindow(QMainWindow):
         self.tg_enabled.setToolTip(tr("Enable the trigger for this macro"))
         self.tg_enabled.toggled.connect(self.on_option_change)
         frame, lay = card(tr("Image trigger"),
-                          tr("When this image appears on screen, the macro runs automatically (in monitoring mode)."),
+                          tr("When one of these images appears on screen, the macro runs automatically (in monitoring mode)."),
                           self.tg_enabled)
         body = QHBoxLayout()
         body.setSpacing(24)
@@ -1163,6 +1247,7 @@ class MainWindow(QMainWindow):
         left.setSpacing(8)
         self.drop = ImageDrop()
         self.drop.imageDropped.connect(self.set_template)
+        self.drop.removeRequested.connect(self.remove_template)
         left.addWidget(self.drop)
         g = QGridLayout()
         g.setSpacing(6)
@@ -1170,8 +1255,13 @@ class MainWindow(QMainWindow):
         g.addWidget(button("✂ " + tr("From screen"), tip=tr("Select the image directly on screen"),
                            slot=self.capture_template), 0, 1)
         g.addWidget(button("📁 " + tr("File…"), slot=self.load_template_file), 1, 0)
-        g.addWidget(button("✕ " + tr("Remove"), slot=self.clear_template), 1, 1)
+        g.addWidget(button("✕ " + tr("Remove all"), slot=self.clear_template), 1, 1)
         left.addLayout(g)
+        variants = QLabel(tr("Add several variants of the image — the trigger fires when any of them is found."))
+        variants.setObjectName("hint")
+        variants.setWordWrap(True)
+        variants.setMaximumWidth(220)
+        left.addWidget(variants)
         left.addStretch(1)
         body.addLayout(left)
 
@@ -1604,7 +1694,7 @@ class MainWindow(QMainWindow):
             sub = "⌘ " + tr("command only")
         else:
             sub = tr("empty — press “Record”")
-        trig = bool(m["trigger"]["enabled"] and m["trigger"]["template"])
+        trig = bool(m["trigger"]["enabled"] and core.has_images(m))
         return m["name"], sub, trig
 
     def refresh_list(self):
@@ -1632,7 +1722,7 @@ class MainWindow(QMainWindow):
         self._update_watch_info()
 
     def _active_triggers(self):
-        return [m for m in self.macros if m["trigger"]["enabled"] and m["trigger"]["template"] and core.runnable(m)]
+        return [m for m in self.macros if m["trigger"]["enabled"] and core.has_images(m) and core.runnable(m)]
 
     def _update_watch_info(self):
         active = self._active_triggers()
@@ -1787,7 +1877,7 @@ class MainWindow(QMainWindow):
         self._update_cmd_placeholder()
         self._loading = False
         self.meter.set_values(None, int(t["threshold"]),
-                              tr("Press “Check”") if t["template"] else tr("Add an image first"))
+                              tr("Press “Check”") if t["templates"] else tr("Add an image first"))
         self.update_labels()
         self.update_preview()
 
@@ -1846,8 +1936,8 @@ class MainWindow(QMainWindow):
 
     def update_preview(self):
         m = self.macro()
-        b64 = m["trigger"]["template"] if m else None
-        self.drop.set_image(core.b64_to_image(b64) if b64 else None)
+        images = m["trigger"]["templates"] if m else []
+        self.drop.set_images([core.b64_to_image(b64) for b64 in images])
 
     # ================= template image =================
 
@@ -1858,8 +1948,17 @@ class MainWindow(QMainWindow):
         if img.width < 4 or img.height < 4:
             QMessageBox.warning(self, tr("Image"), tr("The image is too small."))
             return
-        m["trigger"]["template"] = core.image_to_b64(img)
-        m["anchor"] = None
+        images = m["trigger"]["templates"]
+        if len(images) >= core.MAX_IMAGES:
+            QMessageBox.warning(self, tr("Image"), tr("A macro can have up to {n} images.", n=core.MAX_IMAGES))
+            return
+        b64 = core.image_to_b64(img)
+        if b64 in images:
+            self.log(tr("This image is already in “{name}”.", name=m["name"]))
+            return
+        images.append(b64)
+        if len(images) == 1:
+            m["anchor"] = None
         if not m["trigger"]["enabled"]:
             self.tg_enabled.setChecked(True)
         self.refresh_current_item()
@@ -1867,7 +1966,22 @@ class MainWindow(QMainWindow):
         self.update_labels()
         self.meter.set_values(None, m["trigger"]["threshold"], tr("Image added — press “Check”"))
         self.save()
-        self.log(tr("Image for “{name}” added ({w}×{h}).", name=m["name"], w=img.width, h=img.height))
+        self.log(tr("Image {n} for “{name}” added ({w}×{h}).", n=len(images), name=m["name"],
+                    w=img.width, h=img.height))
+
+    def remove_template(self, index):
+        m = self.macro()
+        if not m or self.mode != "idle" or not 0 <= index < len(m["trigger"]["templates"]):
+            return
+        del m["trigger"]["templates"][index]
+        if not m["trigger"]["templates"]:
+            m["anchor"] = None
+        self.refresh_current_item()
+        self.update_preview()
+        self.update_labels()
+        self.meter.set_values(None, m["trigger"]["threshold"],
+                              tr("Press “Check”") if m["trigger"]["templates"] else tr("Add an image first"))
+        self.save()
 
     def paste_template(self):
         fw = QApplication.focusWidget()
@@ -1911,7 +2025,7 @@ class MainWindow(QMainWindow):
     def clear_template(self):
         m = self.macro()
         if m:
-            m["trigger"]["template"] = None
+            m["trigger"]["templates"] = []
             m["anchor"] = None
             self.refresh_current_item()
             self.update_preview()
@@ -1987,29 +2101,34 @@ class MainWindow(QMainWindow):
         def run():
             t0 = time.perf_counter()
             try:
-                score, rect, _ = core.find_template(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
+                score, rect, _, idx = core.find_any(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
             except Exception as e:
                 self.log(tr("Search error: {err}", err=e))
-                score, rect = 0.0, None
-            self.bridge.test_result.emit(m, score, rect, (time.perf_counter() - t0) * 1000)
+                score, rect, idx = 0.0, None, -1
+            self.bridge.test_result.emit(m, score, (rect, idx), (time.perf_counter() - t0) * 1000)
 
         QTimer.singleShot(250, lambda: threading.Thread(target=run, daemon=True).start())
 
-    def _on_test_result(self, m, score, rect, ms):
+    def _on_test_result(self, m, score, match, ms):
+        rect, idx = match
         self._selecting = False
         self.show()
         self.activateWindow()
         thr = m["trigger"]["threshold"]
         ok = score * 100 >= thr
+        many = len(m["trigger"]["templates"]) > 1
         if m is self.macro():
             self.meter.set_values(score, thr)
+            self.drop.set_matched(idx if ok else -1)
         self.log(tr("Check “{name}”: similarity {score}% (threshold {thr}%) — {result}, {ms} ms",
                     name=m["name"], score=f"{score * 100:.1f}", thr=thr,
-                    result=tr("found") if ok else tr("not found"), ms=f"{ms:.0f}"))
+                    result=tr("found") if ok else tr("not found"), ms=f"{ms:.0f}")
+                 + (tr(", image #{n}", n=idx + 1) if many and idx >= 0 else ""))
         if m["trigger"]["region"]:
             self.flash(m["trigger"]["region"], ACCENT2, tr("search area"))
         if rect:
-            self.flash(rect, GREEN if ok else ORANGE, f"{score * 100:.0f}%")
+            self.flash(rect, GREEN if ok else ORANGE,
+                       f"{score * 100:.0f}%" + (f"  #{idx + 1}" if many and idx >= 0 else ""))
 
     def _on_meter(self, m, score):
         if m is self.macro():
@@ -2048,7 +2167,7 @@ class MainWindow(QMainWindow):
         tpl = self.templates.get(m)
         if tpl is not None:
             try:
-                score, rect, scale = core.find_template(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
+                score, rect, scale, _ = core.find_any(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
             except Exception:
                 score, rect, scale = 0.0, None, 1.0
             pct = f"{score * 100:.0f}"
@@ -2111,9 +2230,9 @@ class MainWindow(QMainWindow):
             tpl = self.templates.get(m) if t["enabled"] else None
             while not self.stop_event.is_set() and (repeats == 0 or n < repeats):
                 n += 1
-                transform, score, rect = None, None, None
+                transform, score, rect, idx = None, None, None, -1
                 if tpl is not None and (t["require"] or (t["relative"] and m.get("anchor"))):
-                    score, rect, scale = core.find_template(tpl, t["region"], t["multiscale"])
+                    score, rect, scale, idx = core.find_any(tpl, t["region"], t["multiscale"])
                     pct = f"{score * 100:.0f}"
                     if score * 100 >= t["threshold"]:
                         transform = core.click_transform(m, rect, scale)
@@ -2135,7 +2254,7 @@ class MainWindow(QMainWindow):
                 self.bridge.hud.emit(tr("PLAYING  “{name}”   ·   {progress}   ·   {key} — stop",
                                         name=m["name"], progress=progress, key=self.hk("stop")), ACCENT2)
                 found = score is not None and score * 100 >= t["threshold"]
-                self._run_macro(m, transform, score if found else None, rect if found else None)
+                self._run_macro(m, transform, score if found else None, rect if found else None, idx)
                 if repeats == 0 or n < repeats:
                     self.stop_event.wait(m["repeat_delay"])
             self.log(tr("Playback of “{name}” finished ({times}).", name=m["name"], times=count(n, "time")))
@@ -2144,17 +2263,17 @@ class MainWindow(QMainWindow):
         finally:
             self.bridge.finished.emit()
 
-    def _run_macro(self, m, transform=None, score=None, rect=None):
+    def _run_macro(self, m, transform=None, score=None, rect=None, index=-1):
         """Runs one pass of a macro from a worker thread: the command (before/after) and the clicks."""
         cmd = m["command"]
         if core.has_command(m) and cmd["when"] == "before":
-            self._run_command(m, score, rect)
+            self._run_command(m, score, rect, index)
         if m["events"] and not self.stop_event.is_set():
             self.player.run(m, transform)
         if core.has_command(m) and cmd["when"] != "before" and not self.stop_event.is_set():
-            self._run_command(m, score, rect)
+            self._run_command(m, score, rect, index)
 
-    def _run_command(self, m, score=None, rect=None):
+    def _run_command(self, m, score=None, rect=None, index=-1):
         name = m["name"]
 
         def log(kind, value):
@@ -2167,7 +2286,7 @@ class MainWindow(QMainWindow):
             elif kind == "killed":
                 self.log(tr("Command of “{name}” was stopped.", name=name))
         try:
-            core.run_command(m["command"], core.match_env(m, score, rect), self.stop_event, log)
+            core.run_command(m["command"], core.match_env(m, score, rect, index), self.stop_event, log)
         except Exception as e:
             self.log(tr("Command error: {err}", err=e))
 
@@ -2219,7 +2338,7 @@ class MainWindow(QMainWindow):
                     if self.stop_event.is_set():
                         break
                     t, st = m["trigger"], state[id(m)]
-                    score, rect, scale = core.find_template(self.templates.get(m), t["region"], t["multiscale"],
+                    score, rect, scale, idx = core.find_any(self.templates.get(m), t["region"], t["multiscale"],
                                                             frame=frame)
                     found = score * 100 >= t["threshold"]
                     if not found:
@@ -2232,12 +2351,14 @@ class MainWindow(QMainWindow):
                         st["runs"] += 1
                         msg = tr("Found “{name}” ({score}%) at ({x}, {y}) — running",
                                  name=m["name"], score=f"{score * 100:.1f}", x=rect[0], y=rect[1])
+                        if len(t["templates"]) > 1:
+                            msg += tr(", image #{n}", n=idx + 1)
                         if transform:
                             msg += tr(", offset {offset}", offset=(transform[2] - transform[0], transform[3] - transform[1]))
                         self.log(msg)
                         self.bridge.hud.emit(tr("RUNNING  “{name}”   ·   {key} — stop",
                                                 name=m["name"], key=self.hk("stop")), ACCENT2)
-                        self._run_macro(m, transform, score, rect)
+                        self._run_macro(m, transform, score, rect, idx)
                         st["last"] = time.perf_counter()
                         if t["wait_gone"]:
                             st["armed"] = False
