@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.tmp
+
+# personal data
+macros.json
+settings.json

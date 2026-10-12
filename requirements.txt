@@ -1,0 +1,6 @@
+PySide6-Essentials
+pynput
+mss
+opencv-python
+numpy
+Pillow
