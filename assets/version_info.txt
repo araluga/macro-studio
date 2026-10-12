@@ -1,8 +1,8 @@
 # PyInstaller version resource for MacroStudio.exe (shown in File Properties → Details)
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 1, 0, 0),
-    prodvers=(1, 1, 0, 0),
+    filevers=(1, 2, 0, 0),
+    prodvers=(1, 2, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -14,13 +14,13 @@ VSVersionInfo(
     StringFileInfo([
       StringTable('040904B0', [
         StringStruct('CompanyName', 'araluga'),
-        StringStruct('FileDescription', 'Macro Studio - macro recorder with image triggers'),
-        StringStruct('FileVersion', '1.1.0'),
+        StringStruct('FileDescription', 'Macro Studio - macro recorder with image triggers and commands'),
+        StringStruct('FileVersion', '1.2.0'),
         StringStruct('InternalName', 'MacroStudio'),
         StringStruct('LegalCopyright', 'MIT License'),
         StringStruct('OriginalFilename', 'MacroStudio.exe'),
         StringStruct('ProductName', 'Macro Studio'),
-        StringStruct('ProductVersion', '1.1.0')
+        StringStruct('ProductVersion', '1.2.0')
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

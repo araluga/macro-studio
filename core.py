@@ -4,6 +4,8 @@ import base64
 import io
 import json
 import os
+import subprocess
+import tempfile
 import threading
 import time
 
@@ -45,16 +47,33 @@ def new_macro(name):
             "max_runs": 0,       # per monitoring session, 0 = unlimited
             "require": True,     # Play: skip a repeat when the image isn't on screen
         },
+        "command": {
+            "enabled": False,
+            "text": "",          # cmd / PowerShell script written in advance
+            "shell": "cmd",      # cmd | powershell
+            "when": "after",     # before | after the recorded clicks
+            "wait": True,        # wait for it to finish (output and exit code go to the log)
+            "show": False,       # show a console window
+        },
     }
 
 
 def fix_macro(m):
     base = new_macro(m.get("name", "Macro"))
-    trig = base["trigger"]
-    trig.update(m.get("trigger", {}))
+    nested = {key: {**base[key], **(m.get(key) or {})} for key in ("trigger", "command")}
     base.update(m)
-    base["trigger"] = trig
+    base.update(nested)
     return base
+
+
+def has_command(m):
+    c = m["command"]
+    return bool(c["enabled"] and c["text"].strip())
+
+
+def runnable(m):
+    """A macro can run if it has recorded actions or a command."""
+    return bool(m["events"]) or has_command(m)
 
 
 def load_macros(path):
@@ -277,6 +296,96 @@ def click_transform(m, rect, scale):
     cx, cy = rect_center(rect)
     k = scale / (m.get("anchor_scale") or 1.0) if m["trigger"]["multiscale"] else 1.0
     return ax, ay, cx, cy, k
+
+
+# --------------------------------------------------------------------------
+# Terminal commands
+# --------------------------------------------------------------------------
+
+CREATE_NO_WINDOW = 0x08000000
+CREATE_NEW_CONSOLE = 0x00000010
+_CMD_DIR = os.path.join(tempfile.gettempdir(), "MacroStudio")
+
+
+def match_env(m, score=None, rect=None):
+    """Environment variables a command can use: %MATCH_X% in cmd, $env:MATCH_X in PowerShell."""
+    env = {"MACRO_NAME": m["name"], "MATCH_FOUND": "0", "MATCH_X": "", "MATCH_Y": "",
+           "MATCH_W": "", "MATCH_H": "", "MATCH_SCORE": ""}
+    if rect:
+        cx, cy = rect_center(rect)
+        env.update(MATCH_FOUND="1", MATCH_X=str(cx), MATCH_Y=str(cy), MATCH_W=str(rect[2]),
+                   MATCH_H=str(rect[3]), MATCH_SCORE=f"{score * 100:.1f}" if score is not None else "")
+    return env
+
+
+def _script_file(cfg):
+    """Writes the command into a temporary .cmd/.ps1 so multi-line scripts and Unicode work."""
+    os.makedirs(_CMD_DIR, exist_ok=True)
+    if cfg["shell"] == "powershell":
+        body = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8\n"
+                "$OutputEncoding = [Text.Encoding]::UTF8\n" + cfg["text"])
+        fd, path = tempfile.mkstemp(suffix=".ps1", dir=_CMD_DIR)
+        with os.fdopen(fd, "w", encoding="utf-8-sig") as f:  # PowerShell 5 needs the BOM for Unicode
+            f.write(body)
+        args = ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path]
+    else:
+        text = cfg["text"].replace("\r\n", "\n").replace("\n", "\r\n")
+        body = "@echo off\r\nchcp 65001 >nul\r\n" + text + "\r\n"
+        fd, path = tempfile.mkstemp(suffix=".cmd", dir=_CMD_DIR)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(body)
+        args = ["cmd.exe", "/d", "/c", path]
+    return path, args
+
+
+def _remove_later(proc, path):
+    def wait_and_remove():
+        proc.wait()
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    threading.Thread(target=wait_and_remove, daemon=True).start()
+
+
+def kill_tree(proc):
+    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
+                   creationflags=CREATE_NO_WINDOW)
+
+
+def run_command(cfg, env_extra, stop_event, log):
+    """Runs the macro's command. Returns the exit code, or None if it wasn't waited for.
+
+    log(kind, value) receives ("started", pid), ("output", line), ("exit", code), ("killed", None)."""
+    path, args = _script_file(cfg)
+    env = {**os.environ, **env_extra}
+    flags = CREATE_NEW_CONSOLE if cfg["show"] else CREATE_NO_WINDOW
+    capture = cfg["wait"] and not cfg["show"]
+    proc = subprocess.Popen(args, cwd=os.path.expanduser("~"), env=env, creationflags=flags,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                            stderr=subprocess.STDOUT if capture else subprocess.DEVNULL)
+    _remove_later(proc, path)
+    log("started", proc.pid)
+    if not cfg["wait"]:
+        return None
+    out = b""
+    while True:
+        try:
+            chunk, _ = proc.communicate(timeout=0.2)
+            out += chunk or b""
+            break
+        except subprocess.TimeoutExpired:
+            if stop_event.is_set():
+                kill_tree(proc)
+                proc.wait()
+                log("killed", None)
+                return None
+    for line in out.decode("utf-8", errors="replace").splitlines()[-20:]:
+        if line.strip():
+            log("output", line[:300])
+    log("exit", proc.returncode)
+    return proc.returncode
 
 
 # --------------------------------------------------------------------------

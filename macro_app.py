@@ -36,7 +36,7 @@ import core
 import i18n
 from i18n import count, tr
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 if getattr(sys, "frozen", False):
     # packaged .exe: the bundle is unpacked to a temp folder, so keep user data in %APPDATA%
@@ -118,6 +118,10 @@ QSlider::sub-page:horizontal {{ background: {GRAD}; border-radius: 3px; }}
 QSlider::handle:horizontal {{ background: white; width: 16px; height: 16px; margin: -5px 0; border-radius: 8px; }}
 QSlider::handle:horizontal:hover {{ background: #dcd6ff; }}
 
+QPlainTextEdit#cmd {{ background: #10131b; border: 1px solid #262b3a; border-radius: 10px;
+                      font-family: Consolas; font-size: 9.5pt; color: #e6e8ef; padding: 6px;
+                      selection-background-color: {ACCENT}; }}
+QPlainTextEdit#cmd:focus {{ border-color: {ACCENT}; }}
 QPlainTextEdit#log {{ background: #0f1118; border: 1px solid #1d2130; border-radius: 10px;
                       font-family: Consolas; font-size: 9pt; color: #a9aec0; padding: 6px; }}
 QScrollArea {{ background: transparent; border: none; }}
@@ -1133,6 +1137,7 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(0, 0, 10, 4)
         col.setSpacing(14)
         col.addWidget(self._build_trigger_card())
+        col.addWidget(self._build_command_card())
         row = QHBoxLayout()
         row.setSpacing(14)
         row.addWidget(self._build_playback_card(), 1)
@@ -1249,6 +1254,76 @@ class MainWindow(QMainWindow):
         body.addLayout(right, 1)
         lay.addLayout(body)
         return frame
+
+    def _build_command_card(self):
+        self.tg_cmd = Toggle()
+        self.tg_cmd.setToolTip(tr("Run a command when this macro runs"))
+        self.tg_cmd.toggled.connect(self.on_option_change)
+        frame, lay = card(tr("Run a command"),
+                          tr("A cmd or PowerShell script written in advance. It runs every time this macro runs: "
+                             "on Play, or when its image trigger fires."),
+                          self.tg_cmd)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(QLabel(tr("Shell")))
+        box, self.seg_shell = segmented([("cmd", "cmd"), ("powershell", "PowerShell")], "cmd",
+                                        lambda k: self._set_command_option("shell", k))
+        row.addWidget(box)
+        row.addSpacing(18)
+        row.addWidget(QLabel(tr("When")))
+        box, self.seg_when = segmented([("before", tr("Before the clicks")), ("after", tr("After the clicks"))],
+                                       "after", lambda k: self._set_command_option("when", k))
+        row.addWidget(box)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        self.cmd_edit = QPlainTextEdit()
+        self.cmd_edit.setObjectName("cmd")
+        self.cmd_edit.setMinimumHeight(110)
+        self.cmd_edit.setTabChangesFocus(True)
+        self.cmd_edit.textChanged.connect(self.on_option_change)
+        lay.addWidget(self.cmd_edit)
+        hint = QLabel(tr("Variables: MACRO_NAME, MATCH_X and MATCH_Y (center of the found image), MATCH_W, MATCH_H, "
+                         "MATCH_SCORE — write %MATCH_X% in cmd or $env:MATCH_X in PowerShell. The command runs in your "
+                         "user folder with your account's rights."))
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        self.tg_cmd_wait = Toggle()
+        self.tg_cmd_wait.toggled.connect(self.on_option_change)
+        lay.addWidget(setting_row(tr("Wait until it finishes"),
+                                  tr("The output and exit code go to the log; the stop key ends the command. "
+                                     "Turn off to start it in the background."),
+                                  self.tg_cmd_wait))
+        self.tg_cmd_show = Toggle()
+        self.tg_cmd_show.toggled.connect(self.on_option_change)
+        lay.addWidget(setting_row(tr("Show the console window"),
+                                  tr("Otherwise the command runs hidden."), self.tg_cmd_show))
+        test = QHBoxLayout()
+        test.addWidget(button("▶ " + tr("Test the command"), "ghost", tr("Run the command now, without clicks"),
+                              self.test_command))
+        test.addStretch(1)
+        lay.addLayout(test)
+        return frame
+
+    def _set_command_option(self, key, value):
+        m = self.macro()
+        if m and not self._loading:
+            m["command"][key] = value
+            self._update_cmd_placeholder()
+            self.save_later()
+
+    def _update_cmd_placeholder(self):
+        m = self.macro()
+        if m and m["command"]["shell"] == "powershell":
+            self.cmd_edit.setPlaceholderText(
+                tr("For example:") + '\nAdd-Content "$env:USERPROFILE\\found.log" "$(Get-Date) $env:MACRO_NAME '
+                '$env:MATCH_X,$env:MATCH_Y"\nStart-Process "https://example.com"')
+        else:
+            self.cmd_edit.setPlaceholderText(
+                tr("For example:") + "\necho %date% %time% %MACRO_NAME% %MATCH_X%,%MATCH_Y% >> found.log"
+                "\nstart https://example.com")
 
     def _build_playback_card(self):
         frame, lay = card(tr("Playback"), tr("How to replay the recorded actions."))
@@ -1521,7 +1596,14 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _item_texts(m):
         n, clicks, dur = core.macro_stats(m)
-        sub = f"{count(clicks, 'click')} · {tr('{dur} s', dur=f'{dur:.1f}')}" if n else tr("empty — press “Record”")
+        if n:
+            sub = f"{count(clicks, 'click')} · {tr('{dur} s', dur=f'{dur:.1f}')}"
+            if core.has_command(m):
+                sub += " · ⌘"
+        elif core.has_command(m):
+            sub = "⌘ " + tr("command only")
+        else:
+            sub = tr("empty — press “Record”")
         trig = bool(m["trigger"]["enabled"] and m["trigger"]["template"])
         return m["name"], sub, trig
 
@@ -1550,7 +1632,7 @@ class MainWindow(QMainWindow):
         self._update_watch_info()
 
     def _active_triggers(self):
-        return [m for m in self.macros if m["trigger"]["enabled"] and m["trigger"]["template"] and m["events"]]
+        return [m for m in self.macros if m["trigger"]["enabled"] and m["trigger"]["template"] and core.runnable(m)]
 
     def _update_watch_info(self):
         active = self._active_triggers()
@@ -1659,10 +1741,18 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, tr("Error"), str(e))
             return
+        with_cmd = [m for m in added if core.has_command(m)]
+        for m in with_cmd:
+            m["command"]["enabled"] = False
         self.macros.extend(added)
         self.refresh_list()
         self.save()
         self.log(tr("Imported macros: {n}", n=len(added)))
+        if with_cmd:
+            QMessageBox.warning(self, tr("Import"), tr(
+                "Some imported macros contain terminal commands: {names}.\n\nThey were switched off. Read each "
+                "command before turning it on — a command from someone else can do anything your account can.",
+                names=quoted_names(with_cmd)))
 
     # ================= syncing UI and data =================
 
@@ -1686,6 +1776,15 @@ class MainWindow(QMainWindow):
         self.sl_speed.setValue(int(round(float(m["speed"]) * 100)))
         self.tg_skip.setChecked(m["skip_moves"])
         self.tg_kb.setChecked(m["record_keyboard"])
+        c = m["command"]
+        self.tg_cmd.setChecked(c["enabled"])
+        if self.cmd_edit.toPlainText() != c["text"]:
+            self.cmd_edit.setPlainText(c["text"])
+        self.seg_shell[c["shell"] if c["shell"] in self.seg_shell else "cmd"].setChecked(True)
+        self.seg_when[c["when"] if c["when"] in self.seg_when else "after"].setChecked(True)
+        self.tg_cmd_wait.setChecked(c["wait"])
+        self.tg_cmd_show.setChecked(c["show"])
+        self._update_cmd_placeholder()
         self._loading = False
         self.meter.set_values(None, int(t["threshold"]),
                               tr("Press “Check”") if t["template"] else tr("Add an image first"))
@@ -1714,6 +1813,11 @@ class MainWindow(QMainWindow):
         m["speed"] = self.sl_speed.value() / 100
         m["skip_moves"] = self.tg_skip.isChecked()
         m["record_keyboard"] = self.tg_kb.isChecked()
+        c = m["command"]
+        c["enabled"] = self.tg_cmd.isChecked()
+        c["text"] = self.cmd_edit.toPlainText()
+        c["wait"] = self.tg_cmd_wait.isChecked()
+        c["show"] = self.tg_cmd_show.isChecked()
         self.meter.set_values(self.meter.score, t["threshold"])
         self.refresh_current_item()
         self.save_later()
@@ -1987,8 +2091,8 @@ class MainWindow(QMainWindow):
         if self.mode != "idle":
             return
         m = self.macro()
-        if not m or not m["events"]:
-            self.log(tr("No recorded actions in this macro — press “Record” first."))
+        if not m or not core.runnable(m):
+            self.log(tr("This macro has no recorded actions or command — press “Record” or add a command."))
             return
         self.set_mode("play")
         self.stop_event.clear()
@@ -2007,7 +2111,7 @@ class MainWindow(QMainWindow):
             tpl = self.templates.get(m) if t["enabled"] else None
             while not self.stop_event.is_set() and (repeats == 0 or n < repeats):
                 n += 1
-                transform = None
+                transform, score, rect = None, None, None
                 if tpl is not None and (t["require"] or (t["relative"] and m.get("anchor"))):
                     score, rect, scale = core.find_template(tpl, t["region"], t["multiscale"])
                     pct = f"{score * 100:.0f}"
@@ -2030,7 +2134,8 @@ class MainWindow(QMainWindow):
                 progress = tr("{n} of {total}", n=n, total=repeats if repeats else "∞")
                 self.bridge.hud.emit(tr("PLAYING  “{name}”   ·   {progress}   ·   {key} — stop",
                                         name=m["name"], progress=progress, key=self.hk("stop")), ACCENT2)
-                self.player.run(m, transform)
+                found = score is not None and score * 100 >= t["threshold"]
+                self._run_macro(m, transform, score if found else None, rect if found else None)
                 if repeats == 0 or n < repeats:
                     self.stop_event.wait(m["repeat_delay"])
             self.log(tr("Playback of “{name}” finished ({times}).", name=m["name"], times=count(n, "time")))
@@ -2038,6 +2143,43 @@ class MainWindow(QMainWindow):
             self.log(tr("Playback error: {err}", err=e))
         finally:
             self.bridge.finished.emit()
+
+    def _run_macro(self, m, transform=None, score=None, rect=None):
+        """Runs one pass of a macro from a worker thread: the command (before/after) and the clicks."""
+        cmd = m["command"]
+        if core.has_command(m) and cmd["when"] == "before":
+            self._run_command(m, score, rect)
+        if m["events"] and not self.stop_event.is_set():
+            self.player.run(m, transform)
+        if core.has_command(m) and cmd["when"] != "before" and not self.stop_event.is_set():
+            self._run_command(m, score, rect)
+
+    def _run_command(self, m, score=None, rect=None):
+        name = m["name"]
+
+        def log(kind, value):
+            if kind == "started":
+                self.log(tr("Command of “{name}” started (PID {pid}).", name=name, pid=value))
+            elif kind == "output":
+                self.log("   > " + value)
+            elif kind == "exit":
+                self.log(tr("Command of “{name}” finished with code {code}.", name=name, code=value))
+            elif kind == "killed":
+                self.log(tr("Command of “{name}” was stopped.", name=name))
+        try:
+            core.run_command(m["command"], core.match_env(m, score, rect), self.stop_event, log)
+        except Exception as e:
+            self.log(tr("Command error: {err}", err=e))
+
+    def test_command(self):
+        m = self.macro()
+        if not m or self.mode != "idle":
+            return
+        if not m["command"]["text"].strip():
+            QMessageBox.information(self, tr("Run a command"), tr("Write a command first."))
+            return
+        self.stop_event.clear()  # the stop key ends a long-running test command
+        threading.Thread(target=self._run_command, args=(m,), daemon=True).start()
 
     # ================= monitoring =================
 
@@ -2095,7 +2237,7 @@ class MainWindow(QMainWindow):
                         self.log(msg)
                         self.bridge.hud.emit(tr("RUNNING  “{name}”   ·   {key} — stop",
                                                 name=m["name"], key=self.hk("stop")), ACCENT2)
-                        self.player.run(m, transform)
+                        self._run_macro(m, transform, score, rect)
                         st["last"] = time.perf_counter()
                         if t["wait_gone"]:
                             st["armed"] = False

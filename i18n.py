@@ -130,6 +130,34 @@ RU = {
     "Add an image first": "Сначала добавьте картинку",
     "Image added — press “Check”": "Картинка добавлена — нажмите «Проверить»",
 
+    # command card
+    "Run a command": "Запуск команды",
+    "Run a command when this macro runs": "Запускать команду вместе с этим макросом",
+    "A cmd or PowerShell script written in advance. It runs every time this macro runs: on Play, or when its image trigger fires.":
+        "Заранее написанная команда cmd или PowerShell. Выполняется каждый раз, когда запускается макрос: при воспроизведении или при срабатывании триггера по картинке.",
+    "Shell": "Оболочка",
+    "When": "Когда",
+    "Before the clicks": "До кликов",
+    "After the clicks": "После кликов",
+    "Variables: MACRO_NAME, MATCH_X and MATCH_Y (center of the found image), MATCH_W, MATCH_H, MATCH_SCORE — write %MATCH_X% in cmd or $env:MATCH_X in PowerShell. The command runs in your user folder with your account's rights.":
+        "Переменные: MACRO_NAME, MATCH_X и MATCH_Y (центр найденной картинки), MATCH_W, MATCH_H, MATCH_SCORE — пишите %MATCH_X% в cmd или $env:MATCH_X в PowerShell. Команда выполняется в папке пользователя с правами вашей учётной записи.",
+    "Wait until it finishes": "Ждать завершения",
+    "The output and exit code go to the log; the stop key ends the command. Turn off to start it in the background.":
+        "Вывод и код возврата попадут в журнал, клавиша остановки прерывает команду. Если выключить, команда запустится в фоне.",
+    "Show the console window": "Показывать окно консоли",
+    "Otherwise the command runs hidden.": "Иначе команда выполняется скрыто.",
+    "Test the command": "Проверить команду",
+    "Run the command now, without clicks": "Выполнить команду сейчас, без кликов",
+    "For example:": "Например:",
+    "Write a command first.": "Сначала напишите команду.",
+    "command only": "только команда",
+    "Command of “{name}” started (PID {pid}).": "Команда «{name}» запущена (PID {pid}).",
+    "Command of “{name}” finished with code {code}.": "Команда «{name}» завершилась с кодом {code}.",
+    "Command of “{name}” was stopped.": "Команда «{name}» остановлена.",
+    "Command error: {err}": "Ошибка команды: {err}",
+    "Some imported macros contain terminal commands: {names}.\n\nThey were switched off. Read each command before turning it on — a command from someone else can do anything your account can.":
+        "Некоторые импортированные макросы содержат команды терминала: {names}.\n\nОни выключены. Прочитайте каждую команду, прежде чем включать её: чужая команда может сделать всё, что доступно вашей учётной записи.",
+
     # playback card
     "Playback": "Воспроизведение",
     "How to replay the recorded actions.": "Как повторять записанные действия.",
@@ -212,8 +240,8 @@ RU = {
     "Recording “{name}” started. {key} — stop.": "Запись «{name}» началась. {key} — остановить.",
     "REC  {time}   ·   {events}   ·   {key} — stop": "ЗАПИСЬ  {time}   ·   {events}   ·   {key} — стоп",
     "Recording stopped: {events}.": "Запись остановлена: {events}.",
-    "No recorded actions in this macro — press “Record” first.":
-        "В макросе нет записанных действий — сначала нажмите «Записать».",
+    "This macro has no recorded actions or command — press “Record” or add a command.":
+        "В макросе нет ни записанных действий, ни команды — нажмите «Записать» или добавьте команду.",
     "{n} of {total}": "{n} из {total}",
     "PLAYING  “{name}”   ·   {progress}   ·   {key} — stop":
         "ВОСПРОИЗВЕДЕНИЕ  «{name}»   ·   {progress}   ·   {key} — стоп",

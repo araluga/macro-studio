@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.ru.md)
 
-A Windows macro recorder that can also **react to what's on screen**. Record your mouse clicks, movements and keystrokes, then replay them on demand, or automatically when a chosen image shows up on screen.
+A Windows macro recorder that can also **react to what's on screen**. Record your mouse clicks, movements and keystrokes, then replay them on demand, or automatically when a chosen image shows up on screen. A macro can also run a terminal command you've written in advance.
 
 **[⬇ Download MacroStudio.exe](https://github.com/araluga/macro-studio/releases/latest)**: one file for Windows 10/11, nothing to install.
 
@@ -13,6 +13,7 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 - **Record and replay** mouse clicks, movement, scrolling and (optionally) the keyboard.
 - **Repeats, speed, delay:** loop a macro N times or forever, at 0.25×–5× speed, or replay only the clicks without the mouse path.
 - **Image triggers:** give a macro a picture (paste, drag & drop, open a file, or snip it straight from the screen). In monitoring mode, the macro runs as soon as that picture appears with a similarity above your threshold.
+- **Terminal commands:** a macro can run a cmd or PowerShell script before or after its clicks, or on its own with no clicks at all. The command gets the match position as variables (`%MATCH_X%`, `%MATCH_Y%`, …).
 - **Clicks follow the image:** if the picture shows up somewhere else on screen, the recorded clicks are shifted to match.
 - **Search area:** look for the picture on the whole screen (all monitors) or only in a selected region.
 - **Transparency-aware matching:** transparent pixels (e.g. a sticker's background) are ignored.
@@ -33,6 +34,35 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 3. Choose where to look: **Full screen** or a **Region**, and set the similarity threshold (e.g. 85%). Press **Check** to see the current similarity and where the match is.
 4. With the sticker visible, record the actions: **F9** → right-click the sticker → Delete → **F9**. When recording starts, the app remembers where the sticker was.
 5. Press **F11** to start monitoring. Whenever the sticker appears, the macro deletes it, even if it's in a different place.
+
+## Running a command on an image trigger
+
+Open the **Run a command** card of a macro, turn it on and write the command. A macro doesn't need any recorded clicks: a command-only macro with an image trigger simply runs the command whenever the image appears.
+
+- **Shell:** `cmd` or `PowerShell`. Multi-line scripts are fine.
+- **When:** before or after the recorded clicks.
+- **Wait until it finishes:** the output and exit code go to the log, and the stop key ends a long command. Turn it off to start the command in the background.
+- **Show the console window:** off by default, so the command runs hidden.
+- **Test the command** runs it right away.
+
+Variables you can use:
+
+| Variable | Value |
+|----------|-------|
+| `MACRO_NAME` | Macro name |
+| `MATCH_FOUND` | `1` if the image was found, `0` otherwise |
+| `MATCH_X`, `MATCH_Y` | Center of the found image, in screen pixels |
+| `MATCH_W`, `MATCH_H` | Size of the found image |
+| `MATCH_SCORE` | Similarity in %, e.g. `93.4` |
+
+In cmd you write `%MATCH_X%`, in PowerShell `$env:MATCH_X`. For example:
+
+```bat
+echo %date% %time% %MACRO_NAME% at %MATCH_X%,%MATCH_Y% >> found.log
+start https://example.com
+```
+
+Commands run in your user folder with your account's rights. Commands in **imported** macros are switched off until you review them and turn them back on.
 
 ## Hotkeys (global)
 
