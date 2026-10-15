@@ -37,7 +37,7 @@ import core
 import i18n
 from i18n import count, tr
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 if getattr(sys, "frozen", False):
     # packaged .exe: the bundle is unpacked to a temp folder, so keep user data in %APPDATA%
@@ -1221,6 +1221,7 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(0, 0, 10, 4)
         col.setSpacing(14)
         col.addWidget(self._build_trigger_card())
+        col.addWidget(self._build_center_click_card())
         col.addWidget(self._build_command_card())
         row = QHBoxLayout()
         row.setSpacing(14)
@@ -1320,6 +1321,18 @@ class MainWindow(QMainWindow):
         right.addWidget(setting_row(tr("Search at different scales"),
                                     tr("Finds enlarged or shrunk images, but is slower."),
                                     self.tg_multiscale))
+        self.tg_rotation = Toggle()
+        self.tg_rotation.toggled.connect(self.on_option_change)
+        right.addWidget(setting_row(tr("Find rotated images"),
+                                    tr("Also finds the image turned at any angle or shown much smaller (e.g. a photo "
+                                       "in a chat). Works best on photos and detailed pictures. Slower."),
+                                    self.tg_rotation))
+        self.tg_scale_clicks = Toggle()
+        self.tg_scale_clicks.toggled.connect(self.on_option_change)
+        right.addWidget(setting_row(tr("Scale clicks with the image"),
+                                    tr("If the image is found smaller or bigger, distances to the recorded clicks change "
+                                       "too. Keep off for menus that don't change size."),
+                                    self.tg_scale_clicks))
         self.sp_cooldown = DSpin(0, 3600, 0.5, tr(" s"))
         self.sp_cooldown.valueChanged.connect(self.on_option_change)
         right.addWidget(setting_row(tr("Cooldown after trigger"),
@@ -1344,6 +1357,35 @@ class MainWindow(QMainWindow):
         body.addLayout(right, 1)
         lay.addLayout(body)
         return frame
+
+    def _build_center_click_card(self):
+        frame, lay = card(tr("Click on the found image"),
+                          tr("When the image is found, the mouse clicks its center, wherever it is and whatever its "
+                             "size. This happens first; record only what comes after, e.g. the “Delete” item of the "
+                             "menu. While recording, the app makes this click for you."))
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        box, self.seg_click = segmented([("off", tr("Off")), ("left", tr("Left click")), ("right", tr("Right click")),
+                                         ("double", tr("Double click"))], "off", self._set_center_click)
+        row.addWidget(box)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.sp_click_delay = DSpin(0, 10, 0.1, tr(" s"))
+        self.sp_click_delay.valueChanged.connect(self.on_option_change)
+        lay.addWidget(setting_row(tr("Pause after the click"), tr("Time for a menu to open before the next actions."),
+                                  self.sp_click_delay))
+        self.tg_restore = Toggle()
+        self.tg_restore.toggled.connect(self.on_option_change)
+        lay.addWidget(setting_row(tr("Return the mouse afterwards"),
+                                  tr("Puts the cursor back where it was once the macro has run."), self.tg_restore))
+        return frame
+
+    def _set_center_click(self, button):
+        m = self.macro()
+        if m and not self._loading:
+            m["center_click"]["button"] = button
+            self.refresh_current_item()
+            self.save_later()
 
     def _build_command_card(self):
         self.tg_cmd = Toggle()
@@ -1692,6 +1734,8 @@ class MainWindow(QMainWindow):
                 sub += " · ⌘"
         elif core.has_command(m):
             sub = "⌘ " + tr("command only")
+        elif core.has_center_click(m):
+            sub = "🎯 " + tr("click on the image")
         else:
             sub = tr("empty — press “Record”")
         trig = bool(m["trigger"]["enabled"] and core.has_images(m))
@@ -1857,6 +1901,12 @@ class MainWindow(QMainWindow):
         self.sl_thr.setValue(int(t["threshold"]))
         self.tg_relative.setChecked(t["relative"])
         self.tg_multiscale.setChecked(t["multiscale"])
+        self.tg_rotation.setChecked(t["rotation"])
+        self.tg_scale_clicks.setChecked(t["scale_clicks"])
+        cc = m["center_click"]
+        self.seg_click[cc["button"] if cc["button"] in self.seg_click else "off"].setChecked(True)
+        self.sp_click_delay.setValue(float(cc["delay"]))
+        self.tg_restore.setChecked(m["restore_cursor"])
         self.sp_cooldown.setValue(float(t["cooldown"]))
         self.tg_wait_gone.setChecked(t["wait_gone"])
         self.sp_max_runs.setValue(int(t["max_runs"]))
@@ -1894,6 +1944,10 @@ class MainWindow(QMainWindow):
         t["threshold"] = self.sl_thr.value()
         t["relative"] = self.tg_relative.isChecked()
         t["multiscale"] = self.tg_multiscale.isChecked()
+        t["rotation"] = self.tg_rotation.isChecked()
+        t["scale_clicks"] = self.tg_scale_clicks.isChecked()
+        m["center_click"]["delay"] = self.sp_click_delay.value()
+        m["restore_cursor"] = self.tg_restore.isChecked()
         t["cooldown"] = self.sp_cooldown.value()
         t["wait_gone"] = self.tg_wait_gone.isChecked()
         t["max_runs"] = self.sp_max_runs.value()
@@ -2101,7 +2155,8 @@ class MainWindow(QMainWindow):
         def run():
             t0 = time.perf_counter()
             try:
-                score, rect, _, idx = core.find_any(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
+                score, rect, _, idx = core.find_any(tpl, m["trigger"]["region"], m["trigger"]["multiscale"],
+                                                    rotation=m["trigger"]["rotation"])
             except Exception as e:
                 self.log(tr("Search error: {err}", err=e))
                 score, rect, idx = 0.0, None, -1
@@ -2167,7 +2222,8 @@ class MainWindow(QMainWindow):
         tpl = self.templates.get(m)
         if tpl is not None:
             try:
-                score, rect, scale, _ = core.find_any(tpl, m["trigger"]["region"], m["trigger"]["multiscale"])
+                score, rect, scale, _ = core.find_any(tpl, m["trigger"]["region"], m["trigger"]["multiscale"],
+                                                    rotation=m["trigger"]["rotation"])
             except Exception:
                 score, rect, scale = 0.0, None, 1.0
             pct = f"{score * 100:.0f}"
@@ -2175,8 +2231,20 @@ class MainWindow(QMainWindow):
                 m["anchor"] = list(core.rect_center(rect))
                 m["anchor_scale"] = scale
                 anchor_msg = tr(" Image found ({score}%) — clicks will be anchored to it.", score=pct)
+                if core.has_center_click(m):
+                    # the playback starts with this click, so the recording must start after it
+                    self.player.click_center(rect, m["center_click"]["button"])
+                    anchor_msg += tr(" Clicked its center — record what comes next.")
+                    delay = int(max(0.1, m["center_click"]["delay"]) * 1000)
+                    QTimer.singleShot(delay, lambda: self._start_recorder(m, anchor_msg))
+                    return
             else:
                 anchor_msg = tr(" Image not on screen ({score}%) — no anchor.", score=pct)
+        self._start_recorder(m, anchor_msg)
+
+    def _start_recorder(self, m, anchor_msg):
+        if self.mode != "record" or self.rec_macro is not m:
+            return
         self.recorder.start(m["record_keyboard"])
         self._rec_timer.start()
         self._rec_tick()
@@ -2231,8 +2299,9 @@ class MainWindow(QMainWindow):
             while not self.stop_event.is_set() and (repeats == 0 or n < repeats):
                 n += 1
                 transform, score, rect, idx = None, None, None, -1
-                if tpl is not None and (t["require"] or (t["relative"] and m.get("anchor"))):
-                    score, rect, scale, idx = core.find_any(tpl, t["region"], t["multiscale"])
+                if tpl is not None and (t["require"] or core.has_center_click(m)
+                                        or (t["relative"] and m.get("anchor"))):
+                    score, rect, scale, idx = core.find_any(tpl, t["region"], t["multiscale"], rotation=t["rotation"])
                     pct = f"{score * 100:.0f}"
                     if score * 100 >= t["threshold"]:
                         transform = core.click_transform(m, rect, scale)
@@ -2264,14 +2333,23 @@ class MainWindow(QMainWindow):
             self.bridge.finished.emit()
 
     def _run_macro(self, m, transform=None, score=None, rect=None, index=-1):
-        """Runs one pass of a macro from a worker thread: the command (before/after) and the clicks."""
+        """Runs one pass of a macro from a worker thread: a click on the found image, the command
+        (before/after) and the recorded clicks."""
         cmd = m["command"]
-        if core.has_command(m) and cmd["when"] == "before":
-            self._run_command(m, score, rect, index)
-        if m["events"] and not self.stop_event.is_set():
-            self.player.run(m, transform)
-        if core.has_command(m) and cmd["when"] != "before" and not self.stop_event.is_set():
-            self._run_command(m, score, rect, index)
+        saved = self.player.mouse.position if m["restore_cursor"] else None
+        try:
+            if core.has_center_click(m) and rect:
+                self.player.click_center(rect, m["center_click"]["button"])
+                self.stop_event.wait(m["center_click"]["delay"])
+            if core.has_command(m) and cmd["when"] == "before" and not self.stop_event.is_set():
+                self._run_command(m, score, rect, index)
+            if m["events"] and not self.stop_event.is_set():
+                self.player.run(m, transform)
+            if core.has_command(m) and cmd["when"] != "before" and not self.stop_event.is_set():
+                self._run_command(m, score, rect, index)
+        finally:
+            if saved is not None:
+                self.player.mouse.position = saved
 
     def _run_command(self, m, score=None, rect=None, index=-1):
         name = m["name"]
@@ -2339,7 +2417,7 @@ class MainWindow(QMainWindow):
                         break
                     t, st = m["trigger"], state[id(m)]
                     score, rect, scale, idx = core.find_any(self.templates.get(m), t["region"], t["multiscale"],
-                                                            frame=frame)
+                                                            frame=frame, rotation=t["rotation"])
                     found = score * 100 >= t["threshold"]
                     if not found:
                         st["armed"] = True  # the image is gone: it may trigger again

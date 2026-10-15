@@ -15,10 +15,12 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 - **Image triggers:** give a macro a picture (paste, drag & drop, open a file, or snip it straight from the screen). In monitoring mode, the macro runs as soon as that picture appears with a similarity above your threshold.
 - **Several images per macro:** add up to 12 variants (e.g. different versions of a sticker). The macro fires when **any** of them is found, so you don't have to copy the macro. Different images that need *different* actions go into separate macros; monitoring watches all of them at once.
 - **Terminal commands:** a macro can run a cmd or PowerShell script before or after its clicks, or on its own with no clicks at all. The command gets the match position as variables (`%MATCH_X%`, `%MATCH_Y%`, …).
-- **Clicks follow the image:** if the picture shows up somewhere else on screen, the recorded clicks are shifted to match.
+- **Click on the found image:** a left, right or double click right in the center of the match, wherever it is and whatever its size. Then the recorded clicks follow, e.g. picking "Delete" in the menu that opened. The cursor can be put back afterwards.
+- **Clicks follow the image:** if the picture shows up somewhere else on screen, the recorded clicks are shifted to match. They aren't scaled when the picture is found in another size (menus don't change size), unless you turn that on.
 - **Search area:** look for the picture on the whole screen (all monitors) or only in a selected region.
 - **Transparency-aware matching:** transparent pixels (e.g. a sticker's background) are ignored.
-- **Multi-scale search:** optionally finds the picture even when it's enlarged or shrunk.
+- **Multi-scale search:** optionally finds the picture from ¼ to 2× its size, e.g. a full-size copied photo shown small in a chat.
+- **Rotated images:** optionally finds the picture turned at any angle and at any size, using feature matching (SIFT). Every hit is double-checked by comparing the pixels, so the similarity % means the same as for the normal search. Works best on photos and detailed pictures.
 - **Live feedback:** a similarity meter, a "Check" button that outlines the match on screen, and a floating status pill. The pill lets clicks pass through and is excluded from screenshots, so it never confuses the search.
 - **Several macros at once:** monitoring watches every macro that has a trigger enabled, using one screenshot per cycle.
 - **No runaway loops:** a cooldown, "wait until the image disappears" and a per-session run limit keep a macro from firing again and again if it didn't remove the image.
@@ -33,8 +35,11 @@ A Windows macro recorder that can also **react to what's on screen**. Record you
 1. Create a macro called "Delete sticker".
 2. Copy the sticker (right-click → Copy, or `Win+Shift+S`) and press **Ctrl+V** in the app. You can also drop an image file or click **From screen** and select the sticker. If the sticker has several versions, add each one the same way: they appear as numbered previews, and hovering one shows **×** to remove it.
 3. Choose where to look: **Full screen** or a **Region**, and set the similarity threshold (e.g. 85%). Press **Check** to see the current similarity and where the match is.
-4. With the sticker visible, record the actions: **F9** → right-click the sticker → Delete → **F9**. When recording starts, the app remembers where the sticker was.
-5. Press **F11** to start monitoring. Whenever the sticker appears, the macro deletes it, even if it's in a different place.
+4. In **Click on the found image** choose **Right click**.
+5. With the sticker visible, press **F9**. The app right-clicks the sticker itself and starts recording: click **Delete** in the menu, then press **F9** again.
+6. Press **F11** to start monitoring. Whenever the sticker appears, the macro right-clicks it and deletes it, even if it's in a different place or size.
+
+If it isn't found, turn on **Search at different scales** (smaller or bigger than your copy) or **Find rotated images** (turned, or a photo shown small).
 
 ## Running a command on an image trigger
 

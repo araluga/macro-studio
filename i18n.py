@@ -138,6 +138,29 @@ RU = {
     "Add an image first": "Сначала добавьте картинку",
     "Image added — press “Check”": "Картинка добавлена — нажмите «Проверить»",
 
+    # trigger card: rotation and click scaling
+    "Find rotated images": "Искать повёрнутые картинки",
+    "Also finds the image turned at any angle or shown much smaller (e.g. a photo in a chat). Works best on photos and detailed pictures. Slower.":
+        "Находит картинку, повёрнутую на любой угол или сильно уменьшенную (например, фото в чате). Лучше всего работает на фото и детализированных картинках. Медленнее.",
+    "Scale clicks with the image": "Масштабировать клики вместе с картинкой",
+    "If the image is found smaller or bigger, distances to the recorded clicks change too. Keep off for menus that don't change size.":
+        "Если картинка найдена меньше или больше, расстояния до записанных кликов тоже изменятся. Не включайте для меню — они не меняют размер.",
+
+    # center click card
+    "Click on the found image": "Клик по найденной картинке",
+    "When the image is found, the mouse clicks its center, wherever it is and whatever its size. This happens first; record only what comes after, e.g. the “Delete” item of the menu. While recording, the app makes this click for you.":
+        "Когда картинка найдена, мышь кликает в её центр — где бы она ни была и какого бы ни была размера. Это происходит первым делом, поэтому записывайте только то, что идёт после, например пункт «Удалить» в меню. Во время записи программа сделает этот клик сама.",
+    "Off": "Выкл.",
+    "Left click": "Левый клик",
+    "Right click": "Правый клик",
+    "Double click": "Двойной клик",
+    "Pause after the click": "Пауза после клика",
+    "Time for a menu to open before the next actions.": "Время, чтобы успело открыться меню перед следующими действиями.",
+    "Return the mouse afterwards": "Возвращать мышь на место",
+    "Puts the cursor back where it was once the macro has run.": "После выполнения макроса курсор вернётся туда, где был.",
+    " Clicked its center — record what comes next.": " Клик в её центр сделан — записывайте, что дальше.",
+    "click on the image": "клик по картинке",
+
     # command card
     "Run a command": "Запуск команды",
     "Run a command when this macro runs": "Запускать команду вместе с этим макросом",

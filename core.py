@@ -3,6 +3,7 @@
 import base64
 import io
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -42,11 +43,18 @@ def new_macro(name):
             "threshold": 85,     # %
             "relative": True,
             "multiscale": False,
+            "rotation": False,   # also find rotated / much smaller images (feature matching)
+            "scale_clicks": False,  # scale recorded click offsets when the image is found in another size
             "cooldown": 2.0,
             "wait_gone": True,   # after a run, wait until the image disappears before firing again
             "max_runs": 0,       # per monitoring session, 0 = unlimited
             "require": True,     # Play: skip a repeat when the image isn't on screen
         },
+        "center_click": {
+            "button": "off",     # off | left | right | double: click the center of the found image
+            "delay": 0.3,        # pause after that click, e.g. for a context menu to open
+        },
+        "restore_cursor": False,  # put the mouse back where it was after the macro has run
         "command": {
             "enabled": False,
             "text": "",          # cmd / PowerShell script written in advance
@@ -60,7 +68,7 @@ def new_macro(name):
 
 def fix_macro(m):
     base = new_macro(m.get("name", "Macro"))
-    nested = {key: {**base[key], **(m.get(key) or {})} for key in ("trigger", "command")}
+    nested = {key: {**base[key], **(m.get(key) or {})} for key in ("trigger", "command", "center_click")}
     trig = nested["trigger"]
     old = trig.pop("template", None)  # files from 1.0–1.2 had a single image
     if old and not trig["templates"]:
@@ -82,9 +90,13 @@ def has_command(m):
     return bool(c["enabled"] and c["text"].strip())
 
 
+def has_center_click(m):
+    return m["center_click"]["button"] != "off" and has_images(m)
+
+
 def runnable(m):
-    """A macro can run if it has recorded actions or a command."""
-    return bool(m["events"]) or has_command(m)
+    """A macro can run if it has recorded actions, a command or a click on its image."""
+    return bool(m["events"]) or has_command(m) or has_center_click(m)
 
 
 def load_macros(path):
@@ -188,6 +200,23 @@ class Template:
             m = (alpha > 127).astype(np.uint8) * 255
             self.mask = cv2.merge([m, m, m])
         self._scaled = {}
+        self._features = None
+
+    def features(self):
+        """SIFT keypoints (as template coordinates) and descriptors, computed once.
+        Small images are upscaled first: otherwise they give too few keypoints."""
+        if self._features is None:
+            gray = cv2.cvtColor(self.bgr, cv2.COLOR_BGR2GRAY)
+            mask = None if self.mask is None else self.mask[:, :, 0]
+            up = max(1.0, 160 / min(gray.shape))
+            if up > 1:
+                gray = cv2.resize(gray, None, fx=up, fy=up, interpolation=cv2.INTER_CUBIC)
+                if mask is not None:
+                    mask = cv2.resize(mask, None, fx=up, fy=up, interpolation=cv2.INTER_NEAREST)
+            kp, des = _sift().detectAndCompute(gray, mask)
+            pts = np.float32([k.pt for k in kp]) / up if kp else np.zeros((0, 2), np.float32)
+            self._features = (pts, des)
+        return self._features
 
     def scaled(self, s):
         s = round(s, 3)
@@ -226,7 +255,8 @@ class TemplateCache:
             return result
 
 
-SCALES = [1.0, 0.9, 1.1, 0.8, 1.25, 0.7, 1.4, 0.6, 1.6, 0.5]
+SCALES = [1.0, 0.9, 1.1, 0.8, 1.25, 0.7, 1.4, 0.6, 1.6, 0.5, 1.8, 0.42, 2.0, 0.35, 0.3, 0.25]
+MIN_SIDE = 10  # smallest template side (px) worth matching
 
 
 def _best_match(img, t, m):
@@ -250,10 +280,12 @@ def _search(img, tpl, multiscale):
 
     # 1) coarse pass on a half-size frame over all scales
     th, tw = tpl.bgr.shape[:2]
-    f = 0.5 if min(th, tw) * 0.5 * min(SCALES) >= 10 else 1.0
+    f = 0.5 if min(th, tw) >= 40 else 1.0
     small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA) if f < 1 else img
     coarse = (-1.0, None, 1.0)
     for s in SCALES:
+        if min(th, tw) * s * f < MIN_SIDE:
+            continue
         t, m = tpl.scaled(s * f)
         score, loc = _best_match(small, t, m)
         if loc and score > coarse[0]:
@@ -276,11 +308,73 @@ def _search(img, tpl, multiscale):
     return best
 
 
-def find_template(tpl, region=None, multiscale=False, frame=None):
+_SIFT = threading.local()
+
+
+def _sift():
+    s = getattr(_SIFT, "sift", None)
+    if s is None:
+        s = _SIFT.sift = cv2.SIFT_create(nfeatures=3000)
+    return s
+
+
+class _ScreenFeatures:
+    """Keypoints of the last searched image per thread: several templates share them."""
+    _tls = threading.local()
+
+    @classmethod
+    def get(cls, img):
+        key = (img.__array_interface__["data"][0], img.shape)
+        cached = getattr(cls._tls, "cached", None)
+        if cached and cached[0] == key and cached[1] is img:
+            return cached[2]
+        kp, des = _sift().detectAndCompute(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), None)
+        pts = np.float32([k.pt for k in kp]) if kp else np.zeros((0, 2), np.float32)
+        cls._tls.cached = (key, img, (pts, des))
+        return pts, des
+
+
+def _verify(img, tpl, M):
+    """Warps the matched screen area back into the template frame and measures the real similarity,
+    so feature matches are judged by the same % as normal matches (and random ones score ~0)."""
+    th, tw = tpl.bgr.shape[:2]
+    warped = cv2.warpAffine(img, M, (tw, th), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                            borderMode=cv2.BORDER_CONSTANT)
+    score, _ = _best_match(warped, tpl.bgr, tpl.mask)
+    return score
+
+
+def _feature_search(img, tpl):
+    """Rotation- and scale-invariant search (SIFT + RANSAC). -> (score, (x, y, w, h), scale) or None.
+    Works best on photos and detailed pictures; plain flat images have too few keypoints."""
+    pts, des = tpl.features()
+    spts, sdes = _ScreenFeatures.get(img)
+    if des is None or sdes is None or len(pts) < 3 or len(spts) < 3:
+        return None
+    pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(des, sdes, k=2)
+    good = [m for m, n in (p for p in pairs if len(p) == 2) if m.distance < 0.8 * n.distance]
+    if len(good) < 5:
+        return None
+    M, inliers = cv2.estimateAffinePartial2D(pts[[m.queryIdx for m in good]], spts[[m.trainIdx for m in good]],
+                                             method=cv2.RANSAC, ransacReprojThreshold=4)
+    if M is None or inliers is None or int(inliers.sum()) < 4:
+        return None
+    scale = math.hypot(M[0, 0], M[1, 0])
+    if not 0.1 <= scale <= 5:
+        return None
+    th, tw = tpl.bgr.shape[:2]
+    corners = np.array([[0, 0, 1], [tw, 0, 1], [0, th, 1], [tw, th, 1]], np.float64) @ M.T
+    x1, y1 = corners.min(axis=0)
+    x2, y2 = corners.max(axis=0)
+    return _verify(img, tpl, M), (int(round(x1)), int(round(y1)), int(round(x2 - x1)), int(round(y2 - y1))), scale
+
+
+def find_template(tpl, region=None, multiscale=False, frame=None, rotation=False):
     """Returns (similarity 0..1, (x, y, w, h) in screen coordinates or None, scale).
 
     frame: optional (BGR array, left, top) of an already captured screen, so several
-    macros can be checked against one screenshot."""
+    macros can be checked against one screenshot.
+    rotation: if the normal search isn't sure, also try the rotation-invariant feature search."""
     if frame is None:
         img, ox, oy = grab_screen(region)
     else:
@@ -295,19 +389,23 @@ def find_template(tpl, region=None, multiscale=False, frame=None):
     if img.size == 0:
         return 0.0, None, 1.0
     score, rect, scale = _search(img, tpl, multiscale)
+    if rotation and score < 0.95:
+        feat = _feature_search(img, tpl)
+        if feat and feat[0] > score:
+            score, rect, scale = feat
     if rect is None:
         return 0.0, None, 1.0
     return max(score, 0.0), (rect[0] + ox, rect[1] + oy, rect[2], rect[3]), scale
 
 
-def find_any(tpls, region=None, multiscale=False, frame=None):
+def find_any(tpls, region=None, multiscale=False, frame=None, rotation=False):
     """Searches for several images at once (one screenshot) and returns the best match:
     (similarity 0..1, rect or None, scale, index of the image that matched or -1)."""
     if frame is None:
         frame = grab_screen(region)
     best = (0.0, None, 1.0, -1)
     for i, tpl in enumerate(tpls or []):
-        score, rect, scale = find_template(tpl, region, multiscale, frame)
+        score, rect, scale = find_template(tpl, region, multiscale, frame, rotation)
         if rect is not None and (best[1] is None or score > best[0]):
             best = (score, rect, scale, i)
     return best
@@ -324,7 +422,7 @@ def click_transform(m, rect, scale):
         return None
     ax, ay = m["anchor"]
     cx, cy = rect_center(rect)
-    k = scale / (m.get("anchor_scale") or 1.0) if m["trigger"]["multiscale"] else 1.0
+    k = scale / (m.get("anchor_scale") or 1.0) if m["trigger"]["scale_clicks"] else 1.0
     return ax, ay, cx, cy, k
 
 
@@ -488,6 +586,15 @@ class Player:
         self.stop_event = stop_event
         self.mouse = mouse.Controller()
         self.kb = keyboard.Controller()
+
+    def click_center(self, rect, button):
+        """Clicks the center of a found image: button is left | right | double."""
+        self.mouse.position = rect_center(rect)
+        time.sleep(0.05)  # let the app see the hover before the click
+        if button == "double":
+            self.mouse.click(mouse.Button.left, 2)
+        else:
+            self.mouse.click(mouse.Button.right if button == "right" else mouse.Button.left)
 
     def run(self, m, transform=None):
         """transform: (anchor_x, anchor_y, now_x, now_y, scale) from click_transform(), or None."""
